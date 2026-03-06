@@ -1,6 +1,18 @@
+<div align="center">
+
 # KeyFlow
 
-**AI-Native Secret Manager** — Let AI coding assistants automatically discover and use your API keys.
+**AI-Native Secret Manager**
+
+Let AI coding assistants automatically discover and use your API keys.
+
+[![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white)](#)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![MCP](https://img.shields.io/badge/MCP-Compatible-8A2BE2)](#mcp-server-ai-integration)
+
+</div>
+
+---
 
 ## The Problem
 
@@ -31,6 +43,61 @@ You                          KeyFlow                        AI Assistant
  │                              │    "GOOGLE_API_KEY"            │
  │                              │  ]                             │
 ```
+
+---
+
+## Screenshots
+
+### Web Dashboard — `kf web`
+
+Dark-themed local dashboard at `http://127.0.0.1:9876` with stat cards, searchable table, provider badges, and i18n (EN/ZH/JA).
+
+<p align="center">
+  <img src="docs/web-dashboard.png" alt="Web Dashboard" width="720" />
+</p>
+
+### TUI — `kf ui`
+
+Full-featured terminal interface built with [Ratatui](https://ratatui.rs). Navigate with vim keys, search in real-time, copy secrets to clipboard.
+
+<p align="center">
+  <img src="docs/tui.png" alt="TUI" width="720" />
+</p>
+
+### CLI
+
+<table>
+<tr>
+<td width="50%">
+
+**`kf list`** — View all secrets at a glance
+
+<img src="docs/cli-list.png" alt="kf list" width="480" />
+</td>
+<td width="50%">
+
+**`kf search`** — Find secrets across all fields
+
+<img src="docs/cli-search.png" alt="kf search" width="480" />
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**`kf health`** — Expired & expiring key report
+
+<img src="docs/cli-health.png" alt="kf health" width="480" />
+</td>
+<td width="50%">
+
+**`kf template list`** — 14 predefined service templates
+
+<img src="docs/cli-templates.png" alt="kf template list" width="480" />
+</td>
+</tr>
+</table>
+
+---
 
 ## Quick Start
 
@@ -82,8 +149,6 @@ kf import .env --provider imported --project myapp
 ```bash
 kf ui
 ```
-
-Full-featured terminal interface with cyberpunk/HUD aesthetics:
 
 | Key | Action |
 |-----|--------|
