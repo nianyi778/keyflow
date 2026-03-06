@@ -15,6 +15,7 @@
 - [x] MCP Action Tools — `deploy_secret`、`deploy_project_secrets`、`add_key`、`get_env_snippet`、`check_project_readiness`
 - [x] `kf setup` — 一键配置 9 种 AI 工具（Claude/Cursor/Windsurf/Gemini/OpenCode/Codex/Zed/Cline/Roo）
 - [x] Deploy 安全修复 — 所有目标通过 stdin pipe 或环境变量传值，不暴露在 `ps`
+- [x] Clippy 全部修复 — 参数 struct 重构 (AddArgs/UpdateArgs/MetadataUpdate)
 
 ## P1 — 体验提升
 
@@ -23,11 +24,13 @@
 - [x] Onboarding 闭环 — `kf init` 完成后引导 `kf add` → `kf setup`
 - [ ] **真实 API 健康检查** — reqwest 实际调 API 验证 key 有效性（Google/GitHub/CF）
 - [ ] **过期提醒通知** — cron + macOS 系统通知 / webhook
+- [ ] **单元测试 + 集成测试** — crypto/db/mcp 核心模块测试
 
 ## P2 — 产品化
 
-- [ ] **GitHub Actions CI** — 自动构建 macOS/Linux/Windows 二进制，Release 发布
-- [ ] **Homebrew 发布** — `brew install keyflow`
+- [x] GitHub Actions CI — `ci.yml` clippy 检查 + `release.yml` 多平台自动构建
+- [x] Homebrew Formula — `Formula/keyflow.rb`（发布后需创建 homebrew-tap 仓库）
+- [ ] **创建 homebrew-tap 仓库** — `nianyi778/homebrew-tap`，将 Formula 移入，补 sha256
 - [ ] **多设备同步** — 加密导出后同步到 iCloud/Dropbox/Git
 - [ ] **1Password/Bitwarden 导入** — 从密码管理器批量迁入
 
@@ -43,4 +46,4 @@
 
 - [x] v0.1.0: CLI 全功能 + AES-256-GCM + MCP Server + 17 providers
 - [x] v0.2.0: P0 (passwd/backup/restore/groups/templates) + P1 (completions/dashboard)
-- [x] v0.3.0: AI-Native (5 MCP action tools + kf setup + deploy security fix + onboarding)
+- [x] v0.3.0: AI-Native (5 MCP action tools + kf setup + CI/Homebrew + clippy fix + onboarding)
