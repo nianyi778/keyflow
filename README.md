@@ -102,8 +102,12 @@ Full-featured terminal interface built with [Ratatui](https://ratatui.rs). Navig
 ## Quick Start
 
 ```bash
-# Install
+# Install from source
 cargo install --path .
+
+# Or install via Homebrew
+brew tap nianyi778/keyflow
+brew install keyflow
 
 # Initialize vault
 kf init

@@ -66,11 +66,54 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: master
 
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: Generate checksums
+        id: checksums
+        run: |
+          arm_mac=$(sha256sum artifacts/keyflow-aarch64-apple-darwin/keyflow-aarch64-apple-darwin.tar.gz | awk '{print $1}')
+          intel_mac=$(sha256sum artifacts/keyflow-x86_64-apple-darwin/keyflow-x86_64-apple-darwin.tar.gz | awk '{print $1}')
+          intel_linux=$(sha256sum artifacts/keyflow-x86_64-unknown-linux-gnu/keyflow-x86_64-unknown-linux-gnu.tar.gz | awk '{print $1}')
+          {
+            echo "aarch64_apple_darwin=$arm_mac"
+            echo "x86_64_apple_darwin=$intel_mac"
+            echo "x86_64_unknown_linux_gnu=$intel_linux"
+          } >> "$GITHUB_OUTPUT"
+          cat <<EOF > checksums.txt
+          keyflow-aarch64-apple-darwin.tar.gz  $arm_mac
+          keyflow-x86_64-apple-darwin.tar.gz  $intel_mac
+          keyflow-x86_64-unknown-linux-gnu.tar.gz  $intel_linux
+          EOF
+
+      - name: Update Homebrew formula
+        env:
+          ARM_MAC_SHA: ${{ steps.checksums.outputs.aarch64_apple_darwin }}
+          INTEL_MAC_SHA: ${{ steps.checksums.outputs.x86_64_apple_darwin }}
+          INTEL_LINUX_SHA: ${{ steps.checksums.outputs.x86_64_unknown_linux_gnu }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_VERSION#v}"
+          perl -0pi -e 's/version ".*?"/version "'"$version"'"/' Formula/keyflow.rb
+          perl -0pi -e 's|(url "https://github\.com/nianyi778/keyflow/releases/download/v#\{version\}/keyflow-aarch64-apple-darwin\.tar\.gz"\n\s*sha256 ")[^"]*(")|${1}'"$ARM_MAC_SHA"'${2}|s' Formula/keyflow.rb
+          perl -0pi -e 's|(url "https://github\.com/nianyi778/keyflow/releases/download/v#\{version\}/keyflow-x86_64-apple-darwin\.tar\.gz"\n\s*sha256 ")[^"]*(")|${1}'"$INTEL_MAC_SHA"'${2}|s' Formula/keyflow.rb
+          perl -0pi -e 's|(url "https://github\.com/nianyi778/keyflow/releases/download/v#\{version\}/keyflow-x86_64-unknown-linux-gnu\.tar\.gz"\n\s*sha256 ")[^"]*(")|${1}'"$INTEL_LINUX_SHA"'${2}|s' Formula/keyflow.rb
+
+      - name: Commit formula update
+        run: |
+          if git diff --quiet -- Formula/keyflow.rb; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/keyflow.rb
+          git commit -m "chore: update Homebrew formula for ${GITHUB_REF_NAME}"
+          git push origin HEAD:master
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -79,3 +122,4 @@ jobs:
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
+            checksums.txt
