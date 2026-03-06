@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::crypto::Crypto;
 use crate::db::Database;
-use crate::models::{AppConfig, ListFilter, SecretEntry};
+use crate::models::{AppConfig, ListFilter, SecretEntry, TEMPLATES};
 
 const PROVIDERS: &[&str] = &[
     "google",
@@ -39,18 +39,16 @@ pub fn get_data_dir() -> Result<std::path::PathBuf> {
 }
 
 pub fn get_passphrase() -> Result<String> {
-    // Check env var first
     if let Ok(pass) = std::env::var("KEYFLOW_PASSPHRASE") {
         return Ok(pass);
     }
-    // Interactive prompt
     let pass = Password::new()
         .with_prompt("KeyFlow passphrase")
         .interact()?;
     Ok(pass)
 }
 
-pub fn open_db() -> Result<Database> {
+fn load_config() -> Result<(std::path::PathBuf, AppConfig, Vec<u8>)> {
     let data_dir = get_data_dir()?;
     let config_path = data_dir.join("config.json");
 
@@ -63,15 +61,18 @@ pub fn open_db() -> Result<Database> {
 
     let config_str = fs::read_to_string(&config_path)?;
     let config: AppConfig = serde_json::from_str(&config_str)?;
-
     let salt = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD,
         &config.salt,
     )?;
 
+    Ok((data_dir, config, salt))
+}
+
+pub fn open_db() -> Result<Database> {
+    let (data_dir, _config, salt) = load_config()?;
     let passphrase = get_passphrase()?;
     let crypto = Crypto::new(&passphrase, &salt)?;
-
     let db_path = data_dir.join("keyflow.db");
     Database::open(db_path.to_str().unwrap(), crypto)
 }
@@ -121,12 +122,10 @@ pub fn cmd_init(passphrase_arg: Option<String>) -> Result<()> {
     let config_str = serde_json::to_string_pretty(&config)?;
     fs::write(data_dir.join("config.json"), config_str)?;
 
-    // Verify crypto works
     let crypto = Crypto::new(&passphrase, &salt)?;
     let db_path = data_dir.join("keyflow.db");
     Database::open(db_path.to_str().unwrap(), crypto)?;
 
-    // Set restrictive permissions on the data directory
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -151,6 +150,219 @@ pub fn cmd_init(passphrase_arg: Option<String>) -> Result<()> {
     Ok(())
 }
 
+// === PASSWD ===
+
+pub fn cmd_passwd(old_arg: Option<String>, new_arg: Option<String>) -> Result<()> {
+    let (data_dir, _config, old_salt) = load_config()?;
+
+    // Get old passphrase
+    let old_pass = match old_arg {
+        Some(p) => p,
+        None => {
+            if let Ok(p) = std::env::var("KEYFLOW_PASSPHRASE") {
+                p
+            } else {
+                Password::new()
+                    .with_prompt("Current passphrase")
+                    .interact()?
+            }
+        }
+    };
+
+    // Verify old passphrase by opening DB
+    let old_crypto = Crypto::new(&old_pass, &old_salt)?;
+    let db_path = data_dir.join("keyflow.db");
+    let db = Database::open(db_path.to_str().unwrap(), old_crypto)?;
+
+    // Read all encrypted data and decrypt with old key
+    let raw_entries = db.get_all_raw()?;
+    let mut decrypted_pairs: Vec<(String, Vec<u8>)> = Vec::new();
+    for (name, encrypted) in &raw_entries {
+        let plaintext = db.decrypt_raw(encrypted)?;
+        decrypted_pairs.push((name.clone(), plaintext));
+    }
+
+    // Get new passphrase
+    let new_pass = match new_arg {
+        Some(p) => p,
+        None => {
+            Password::new()
+                .with_prompt("New passphrase")
+                .with_confirmation("Confirm new passphrase", "Passphrases don't match")
+                .interact()?
+        }
+    };
+
+    if new_pass.len() < 6 {
+        bail!("Passphrase must be at least 6 characters");
+    }
+
+    // Generate new salt and crypto
+    let new_salt = Crypto::generate_salt();
+    let new_crypto = Crypto::new(&new_pass, &new_salt)?;
+
+    // Re-encrypt all secrets
+    for (name, plaintext) in &decrypted_pairs {
+        db.reencrypt_secret(name, plaintext, &new_crypto)?;
+    }
+
+    // Update config with new salt
+    let new_salt_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        &new_salt,
+    );
+    let new_config = AppConfig { salt: new_salt_b64 };
+    let config_str = serde_json::to_string_pretty(&new_config)?;
+    fs::write(data_dir.join("config.json"), config_str)?;
+
+    println!(
+        "{} Passphrase changed. {} secrets re-encrypted.",
+        style("✓").green().bold(),
+        decrypted_pairs.len()
+    );
+    println!(
+        "  Update your {} if set.",
+        style("KEYFLOW_PASSPHRASE").yellow()
+    );
+
+    Ok(())
+}
+
+// === BACKUP ===
+
+pub fn cmd_backup(output: Option<String>) -> Result<()> {
+    let db = open_db()?;
+    let entries = db.list_secrets(&ListFilter { inactive: true, ..Default::default() })?;
+
+    let mut backup_data: Vec<serde_json::Value> = Vec::new();
+    for entry in &entries {
+        let value = db.get_secret_value(&entry.name)?;
+        let mut obj = serde_json::to_value(entry)?;
+        obj.as_object_mut().unwrap().insert("_value".to_string(), serde_json::Value::String(value));
+        backup_data.push(obj);
+    }
+
+    let backup_json = serde_json::json!({
+        "version": "0.2.0",
+        "created_at": Utc::now().to_rfc3339(),
+        "secrets": backup_data,
+    });
+
+    let backup_str = serde_json::to_string_pretty(&backup_json)?;
+
+    // Encrypt the backup with current passphrase
+    let (_data_dir, _config, salt) = load_config()?;
+    let passphrase = get_passphrase()?;
+    let crypto = Crypto::new(&passphrase, &salt)?;
+    let encrypted = crypto.encrypt(backup_str.as_bytes())?;
+
+    let output_path = match output {
+        Some(p) => p,
+        None => {
+            let date = Utc::now().format("%Y%m%d-%H%M%S");
+            format!("keyflow-backup-{}.enc", date)
+        }
+    };
+
+    fs::write(&output_path, &encrypted)?;
+    println!(
+        "{} Backed up {} secrets to {}",
+        style("✓").green().bold(),
+        entries.len(),
+        style(&output_path).cyan()
+    );
+
+    Ok(())
+}
+
+// === RESTORE ===
+
+pub fn cmd_restore(file: &str, passphrase_arg: Option<String>) -> Result<()> {
+    let path = Path::new(file);
+    if !path.exists() {
+        bail!("Backup file not found: {}", file);
+    }
+
+    let encrypted = fs::read(path)?;
+
+    // Get the passphrase that was used for the backup
+    let pass = match passphrase_arg {
+        Some(p) => p,
+        None => {
+            if let Ok(p) = std::env::var("KEYFLOW_PASSPHRASE") {
+                p
+            } else {
+                Password::new()
+                    .with_prompt("Backup passphrase (the passphrase used when the backup was created)")
+                    .interact()?
+            }
+        }
+    };
+
+    // We need the salt from the backup time. Since we encrypt with current config,
+    // use current config's salt to decrypt
+    let (_data_dir, _config, salt) = load_config()?;
+    let crypto = Crypto::new(&pass, &salt)?;
+    let decrypted = crypto.decrypt(&encrypted)
+        .context("Failed to decrypt backup. Wrong passphrase or corrupted file?")?;
+
+    let backup_str = String::from_utf8(decrypted)?;
+    let backup: serde_json::Value = serde_json::from_str(&backup_str)?;
+
+    let secrets = backup.get("secrets")
+        .and_then(|s| s.as_array())
+        .context("Invalid backup format")?;
+
+    let db = open_db()?;
+    let mut restored = 0;
+    let mut skipped = 0;
+
+    for secret in secrets {
+        let name = secret.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        let value = secret.get("_value").and_then(|v| v.as_str()).unwrap_or("");
+
+        if name.is_empty() || value.is_empty() {
+            continue;
+        }
+
+        if db.secret_exists(name)? {
+            println!("{} Skipping '{}' (already exists)", style("⊘").dim(), name);
+            skipped += 1;
+            continue;
+        }
+
+        let entry: SecretEntry = serde_json::from_value(secret.clone())
+            .unwrap_or_else(|_| SecretEntry {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: name.to_string(),
+                env_var: name.to_uppercase().replace(['-', ' ', '.'], "_"),
+                provider: String::new(),
+                description: "Restored from backup".to_string(),
+                scopes: vec![],
+                projects: vec![],
+                apply_url: String::new(),
+                expires_at: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                last_used_at: None,
+                is_active: true,
+                key_group: String::new(),
+            });
+
+        db.add_secret(&entry, value)?;
+        println!("{} Restored '{}'", style("✓").green(), style(name).cyan());
+        restored += 1;
+    }
+
+    println!(
+        "\n{} Restored {} secrets ({} skipped)",
+        style("✓").green().bold(),
+        restored,
+        skipped
+    );
+    Ok(())
+}
+
 // === ADD ===
 
 pub fn cmd_add(
@@ -163,10 +375,10 @@ pub fn cmd_add(
     projects: Option<String>,
     url: Option<String>,
     expires: Option<String>,
+    group: Option<String>,
 ) -> Result<()> {
     let db = open_db()?;
 
-    // Detect non-interactive mode: name and value both provided via flags
     let non_interactive = name.is_some() && value.is_some();
 
     let name = match name {
@@ -266,12 +478,17 @@ pub fn cmd_add(
                 .with_prompt("Expiry date (YYYY-MM-DD, empty for none)")
                 .default(String::new())
                 .interact_text()?;
-            if e.is_empty() {
-                None
-            } else {
-                parse_date(&e)?
-            }
+            if e.is_empty() { None } else { parse_date(&e)? }
         }
+    };
+
+    let key_group = match group {
+        Some(g) => g,
+        None if non_interactive => String::new(),
+        None => Input::new()
+            .with_prompt("Key group (bundle name, optional)")
+            .default(String::new())
+            .interact_text()?,
     };
 
     let now = Utc::now();
@@ -289,6 +506,7 @@ pub fn cmd_add(
         updated_at: now,
         last_used_at: None,
         is_active: true,
+        key_group,
     };
 
     db.add_secret(&entry, &secret_value)?;
@@ -304,11 +522,12 @@ pub fn cmd_add(
 
 // === LIST ===
 
-pub fn cmd_list(provider: Option<String>, project: Option<String>, expiring: bool, inactive: bool) -> Result<()> {
+pub fn cmd_list(provider: Option<String>, project: Option<String>, group: Option<String>, expiring: bool, inactive: bool) -> Result<()> {
     let db = open_db()?;
     let entries = db.list_secrets(&ListFilter {
         provider,
         project,
+        group,
         expiring,
         inactive,
     })?;
@@ -322,7 +541,7 @@ pub fn cmd_list(provider: Option<String>, project: Option<String>, expiring: boo
     table
         .load_preset(UTF8_FULL)
         .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec!["Name", "Env Var", "Provider", "Projects", "Expires", "Status"]);
+        .set_header(vec!["Name", "Env Var", "Provider", "Group", "Projects", "Expires", "Status"]);
 
     for entry in &entries {
         let status = entry.status();
@@ -345,10 +564,13 @@ pub fn cmd_list(provider: Option<String>, project: Option<String>, expiring: boo
             entry.projects.join(", ")
         };
 
+        let group_str = if entry.key_group.is_empty() { "-" } else { &entry.key_group };
+
         table.add_row(vec![
             Cell::new(&entry.name),
             Cell::new(&entry.env_var).fg(Color::Yellow),
             Cell::new(&entry.provider),
+            Cell::new(group_str),
             Cell::new(&projects_str),
             Cell::new(&expires_str),
             status_cell,
@@ -428,6 +650,7 @@ pub fn cmd_update(
     url: Option<String>,
     expires: Option<String>,
     active: Option<bool>,
+    group: Option<String>,
 ) -> Result<()> {
     let db = open_db()?;
 
@@ -445,19 +668,13 @@ pub fn cmd_update(
     }
 
     let scopes_vec = scopes.map(|s| {
-        s.split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
+        s.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>()
     });
     let projects_vec = projects.map(|p| {
-        p.split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
+        p.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>()
     });
     let expires_at = match expires {
-        Some(ref e) if e.is_empty() => Some(None), // Clear expiry
+        Some(ref e) if e.is_empty() => Some(None),
         Some(ref e) => Some(parse_date(e)?),
         None => None,
     };
@@ -471,6 +688,7 @@ pub fn cmd_update(
         url.as_deref(),
         expires_at,
         active,
+        group.as_deref(),
     )?;
 
     println!(
@@ -483,13 +701,13 @@ pub fn cmd_update(
 
 // === RUN ===
 
-pub fn cmd_run(project: Option<String>, command: Vec<String>) -> Result<()> {
+pub fn cmd_run(project: Option<String>, group: Option<String>, command: Vec<String>) -> Result<()> {
     if command.is_empty() {
         bail!("No command specified");
     }
 
     let db = open_db()?;
-    let env_pairs = db.get_all_for_env(project.as_deref())?;
+    let env_pairs = db.get_all_for_env(project.as_deref(), group.as_deref())?;
 
     let mut cmd = std::process::Command::new(&command[0]);
     cmd.args(&command[1..]);
@@ -505,15 +723,21 @@ pub fn cmd_run(project: Option<String>, command: Vec<String>) -> Result<()> {
 
 // === IMPORT ===
 
-pub fn cmd_import(file: &str, provider: Option<String>, project: Option<String>) -> Result<()> {
+pub fn cmd_import(file: &str, provider: Option<String>, project: Option<String>, on_conflict: &str) -> Result<()> {
     let path = Path::new(file);
     if !path.exists() {
         bail!("File not found: {}", file);
     }
 
+    if !["skip", "overwrite", "rename"].contains(&on_conflict) {
+        bail!("Invalid --on-conflict value. Use: skip, overwrite, rename");
+    }
+
     let content = fs::read_to_string(path)?;
     let db = open_db()?;
-    let mut count = 0;
+    let mut imported = 0;
+    let mut overwritten = 0;
+    let mut skipped = 0;
 
     let provider = provider.unwrap_or_else(|| "imported".to_string());
     let projects = project.map(|p| vec![p]).unwrap_or_default();
@@ -532,15 +756,34 @@ pub fn cmd_import(file: &str, provider: Option<String>, project: Option<String>)
                 continue;
             }
 
-            let name = key.to_lowercase().replace('_', "-");
+            let mut name = key.to_lowercase().replace('_', "-");
 
             if db.secret_exists(&name)? {
-                println!(
-                    "{} Skipping '{}' (already exists)",
-                    style("⊘").dim(),
-                    name
-                );
-                continue;
+                match on_conflict {
+                    "skip" => {
+                        println!("{} Skipping '{}' (already exists)", style("⊘").dim(), name);
+                        skipped += 1;
+                        continue;
+                    }
+                    "overwrite" => {
+                        db.update_secret_value(&name, val)?;
+                        println!("{} Overwritten '{}'", style("↻").yellow(), style(&name).cyan());
+                        overwritten += 1;
+                        continue;
+                    }
+                    "rename" => {
+                        let mut suffix = 2;
+                        loop {
+                            let candidate = format!("{}-{}", name, suffix);
+                            if !db.secret_exists(&candidate)? {
+                                name = candidate;
+                                break;
+                            }
+                            suffix += 1;
+                        }
+                    }
+                    _ => unreachable!(),
+                }
             }
 
             let now = Utc::now();
@@ -558,6 +801,7 @@ pub fn cmd_import(file: &str, provider: Option<String>, project: Option<String>)
                 updated_at: now,
                 last_used_at: None,
                 is_active: true,
+                key_group: String::new(),
             };
 
             db.add_secret(&entry, val)?;
@@ -567,25 +811,27 @@ pub fn cmd_import(file: &str, provider: Option<String>, project: Option<String>)
                 style(&name).cyan(),
                 style(key).yellow()
             );
-            count += 1;
+            imported += 1;
         }
     }
 
     println!(
-        "\n{} Imported {} secrets from {}",
+        "\n{} Imported: {}, Overwritten: {}, Skipped: {}",
         style("✓").green().bold(),
-        count,
-        file
+        imported,
+        overwritten,
+        skipped
     );
     Ok(())
 }
 
 // === EXPORT ===
 
-pub fn cmd_export(project: Option<String>, output: Option<String>) -> Result<()> {
+pub fn cmd_export(project: Option<String>, group: Option<String>, output: Option<String>) -> Result<()> {
     let db = open_db()?;
     let entries = db.list_secrets(&ListFilter {
         project,
+        group,
         ..Default::default()
     })?;
 
@@ -643,7 +889,6 @@ pub fn cmd_health() -> Result<()> {
     println!("{}", style("KeyFlow Health Report").bold().cyan());
     println!("{}", style("═".repeat(50)).dim());
 
-    // Expired
     let expired: Vec<_> = entries
         .iter()
         .filter(|e| matches!(e.status(), crate::models::KeyStatus::Expired))
@@ -656,9 +901,7 @@ pub fn cmd_health() -> Result<()> {
                 "  {} {} (expired {})",
                 style("•").red(),
                 style(&e.name).cyan(),
-                e.expires_at
-                    .map(|d| d.format("%Y-%m-%d").to_string())
-                    .unwrap_or_default()
+                e.expires_at.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()
             );
             if !e.apply_url.is_empty() {
                 println!("    Renew at: {}", style(&e.apply_url).underlined());
@@ -666,7 +909,6 @@ pub fn cmd_health() -> Result<()> {
         }
     }
 
-    // Expiring soon
     let expiring: Vec<_> = entries
         .iter()
         .filter(|e| matches!(e.status(), crate::models::KeyStatus::ExpiringSoon))
@@ -679,10 +921,7 @@ pub fn cmd_health() -> Result<()> {
             expiring.len()
         );
         for e in &expiring {
-            let days_left = e
-                .expires_at
-                .map(|d| (d - now).num_days())
-                .unwrap_or(0);
+            let days_left = e.expires_at.map(|d| (d - now).num_days()).unwrap_or(0);
             println!(
                 "  {} {} ({} days left)",
                 style("•").yellow(),
@@ -695,7 +934,6 @@ pub fn cmd_health() -> Result<()> {
         }
     }
 
-    // Unused > 30 days
     let unused: Vec<_> = entries
         .iter()
         .filter(|e| {
@@ -712,8 +950,7 @@ pub fn cmd_health() -> Result<()> {
             unused.len()
         );
         for e in &unused {
-            let days = e
-                .last_used_at
+            let days = e.last_used_at
                 .map(|d| (now - d).num_days())
                 .unwrap_or_else(|| (now - e.created_at).num_days());
             println!(
@@ -725,14 +962,9 @@ pub fn cmd_health() -> Result<()> {
         }
     }
 
-    // Inactive
     let inactive: Vec<_> = entries.iter().filter(|e| !e.is_active).collect();
     if !inactive.is_empty() {
-        println!(
-            "\n{} {} Inactive Keys:",
-            style("⊘").dim(),
-            inactive.len()
-        );
+        println!("\n{} {} Inactive Keys:", style("⊘").dim(), inactive.len());
         for e in &inactive {
             println!("  {} {}", style("•").dim(), style(&e.name).dim());
         }
@@ -791,12 +1023,183 @@ pub fn cmd_search(query: &str) -> Result<()> {
         if !entry.description.is_empty() {
             println!("    {}", style(&entry.description).dim());
         }
+        if !entry.key_group.is_empty() {
+            println!("    group: {}", style(&entry.key_group).magenta());
+        }
         if !entry.projects.is_empty() {
             println!("    projects: {}", entry.projects.join(", "));
         }
         println!();
     }
 
+    Ok(())
+}
+
+// === GROUP ===
+
+pub fn cmd_group_list() -> Result<()> {
+    let db = open_db()?;
+    let groups = db.list_groups()?;
+
+    if groups.is_empty() {
+        println!("{}", style("No groups found. Use --group flag when adding secrets, or use 'keyflow template use'.").dim());
+        return Ok(());
+    }
+
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["Group", "Keys"]);
+
+    for (name, count) in &groups {
+        table.add_row(vec![
+            Cell::new(name).fg(Color::Magenta),
+            Cell::new(count),
+        ]);
+    }
+
+    println!("{table}");
+    Ok(())
+}
+
+pub fn cmd_group_show(name: &str) -> Result<()> {
+    let db = open_db()?;
+    let entries = db.list_secrets(&ListFilter {
+        group: Some(name.to_string()),
+        ..Default::default()
+    })?;
+
+    if entries.is_empty() {
+        println!("No secrets in group '{}'.", style(name).magenta());
+        return Ok(());
+    }
+
+    println!("Group: {}\n", style(name).magenta().bold());
+    for entry in &entries {
+        println!(
+            "  {} {} = {}",
+            style("•").green(),
+            style(&entry.env_var).yellow(),
+            style(&entry.description).dim()
+        );
+    }
+    println!("\nUse {} to get values.", style(format!("keyflow export --group {}", name)).cyan());
+    Ok(())
+}
+
+pub fn cmd_group_export(name: &str, output: Option<String>) -> Result<()> {
+    cmd_export(None, Some(name.to_string()), output)
+}
+
+// === TEMPLATE ===
+
+pub fn cmd_template_list() -> Result<()> {
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_header(vec!["Template", "Provider", "Keys", "Description"]);
+
+    for t in TEMPLATES {
+        let keys_str: Vec<&str> = t.keys.iter().map(|k| k.env_var).collect();
+        table.add_row(vec![
+            Cell::new(t.name).fg(Color::Cyan),
+            Cell::new(t.provider),
+            Cell::new(keys_str.join(", ")).fg(Color::Yellow),
+            Cell::new(t.description),
+        ]);
+    }
+
+    println!("{table}");
+    println!(
+        "\nUsage: {} <template-name> [--projects myapp] [--prefix MYAPP_]",
+        style("keyflow template use").cyan()
+    );
+    Ok(())
+}
+
+pub fn cmd_template_use(
+    template_name: &str,
+    projects: Option<String>,
+    expires: Option<String>,
+    prefix: Option<String>,
+) -> Result<()> {
+    let template = TEMPLATES.iter().find(|t| t.name == template_name)
+        .ok_or_else(|| anyhow::anyhow!(
+            "Template '{}' not found. Run {} to see available templates.",
+            template_name,
+            style("keyflow template list").cyan()
+        ))?;
+
+    println!(
+        "{} Using template: {} ({})",
+        style("▸").bold(),
+        style(template.name).cyan().bold(),
+        template.description
+    );
+    println!("  Provider: {}  URL: {}\n", template.provider, style(template.apply_url).underlined());
+
+    let db = open_db()?;
+    let projects_vec: Vec<String> = projects
+        .map(|p| p.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+    let expires_at = expires.as_deref().map(parse_date).transpose()?.flatten();
+    let prefix = prefix.unwrap_or_default();
+    let group_name = template.name.to_string();
+    let now = Utc::now();
+
+    let mut created = 0;
+    for tkey in template.keys {
+        let env_var = format!("{}{}", prefix, tkey.env_var);
+        let secret_name = env_var.to_lowercase().replace('_', "-");
+
+        if db.secret_exists(&secret_name)? {
+            println!("{} Skipping '{}' (already exists)", style("⊘").dim(), secret_name);
+            continue;
+        }
+
+        println!("  {} {}", style("→").cyan(), style(&env_var).yellow());
+        println!("    {}", style(tkey.description).dim());
+
+        let value = if tkey.is_secret {
+            Password::new()
+                .with_prompt(format!("  Enter {}", tkey.env_var))
+                .interact()?
+        } else {
+            Input::new()
+                .with_prompt(format!("  Enter {}", tkey.env_var))
+                .interact_text()?
+        };
+
+        let entry = SecretEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: secret_name.clone(),
+            env_var,
+            provider: template.provider.to_string(),
+            description: tkey.description.to_string(),
+            scopes: vec![],
+            projects: projects_vec.clone(),
+            apply_url: template.apply_url.to_string(),
+            expires_at,
+            created_at: now,
+            updated_at: now,
+            last_used_at: None,
+            is_active: true,
+            key_group: group_name.clone(),
+        };
+
+        db.add_secret(&entry, &value)?;
+        println!("  {}\n", style("✓ Saved").green());
+        created += 1;
+    }
+
+    println!(
+        "\n{} Created {} secrets in group '{}'",
+        style("✓").green().bold(),
+        created,
+        style(&group_name).magenta()
+    );
     Ok(())
 }
 

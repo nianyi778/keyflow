@@ -20,6 +20,32 @@ pub enum Commands {
         passphrase: Option<String>,
     },
 
+    /// Change master passphrase (re-encrypts all secrets)
+    Passwd {
+        /// Current passphrase (or use KEYFLOW_PASSPHRASE env)
+        #[arg(long)]
+        old: Option<String>,
+        /// New passphrase
+        #[arg(long)]
+        new: Option<String>,
+    },
+
+    /// Backup vault to an encrypted file
+    Backup {
+        /// Output path (default: ~/keyflow-backup-<date>.json.enc)
+        #[arg(long, short)]
+        output: Option<String>,
+    },
+
+    /// Restore vault from a backup file
+    Restore {
+        /// Path to backup file
+        file: String,
+        /// Passphrase used when backup was created
+        #[arg(long)]
+        passphrase: Option<String>,
+    },
+
     /// Add a new secret (interactive)
     Add {
         /// Non-interactive mode: secret name
@@ -49,6 +75,9 @@ pub enum Commands {
         /// Expiry date (YYYY-MM-DD)
         #[arg(long)]
         expires: Option<String>,
+        /// Key group name (bundle related keys)
+        #[arg(long)]
+        group: Option<String>,
     },
 
     /// List all secrets
@@ -59,6 +88,9 @@ pub enum Commands {
         /// Filter by project tag
         #[arg(long)]
         project: Option<String>,
+        /// Filter by key group
+        #[arg(long)]
+        group: Option<String>,
         /// Show only expiring/expired keys
         #[arg(long)]
         expiring: bool,
@@ -113,6 +145,9 @@ pub enum Commands {
         /// Toggle active/inactive
         #[arg(long)]
         active: Option<bool>,
+        /// Set key group
+        #[arg(long)]
+        group: Option<String>,
     },
 
     /// Run a command with secrets injected as environment variables
@@ -120,6 +155,9 @@ pub enum Commands {
         /// Only inject secrets tagged with this project
         #[arg(long)]
         project: Option<String>,
+        /// Only inject secrets from this group
+        #[arg(long)]
+        group: Option<String>,
         /// The command and arguments to run
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
@@ -135,6 +173,9 @@ pub enum Commands {
         /// Project tag to assign
         #[arg(long)]
         project: Option<String>,
+        /// Conflict strategy: skip (default), overwrite, rename
+        #[arg(long, default_value = "skip")]
+        on_conflict: String,
     },
 
     /// Export secrets as .env format
@@ -142,6 +183,9 @@ pub enum Commands {
         /// Filter by project
         #[arg(long)]
         project: Option<String>,
+        /// Filter by group
+        #[arg(long)]
+        group: Option<String>,
         /// Output file (default: stdout)
         #[arg(long, short)]
         output: Option<String>,
@@ -156,6 +200,57 @@ pub enum Commands {
         query: String,
     },
 
+    /// Manage key groups (bundles of related secrets)
+    Group {
+        #[command(subcommand)]
+        action: GroupAction,
+    },
+
+    /// Use a predefined template to create a bundle of secrets
+    Template {
+        #[command(subcommand)]
+        action: TemplateAction,
+    },
+
     /// Start MCP server (for AI coding assistants)
     Serve,
+}
+
+#[derive(Subcommand)]
+pub enum GroupAction {
+    /// List all groups
+    List,
+    /// Show secrets in a group
+    Show {
+        /// Group name
+        name: String,
+    },
+    /// Export a group as .env
+    Export {
+        /// Group name
+        name: String,
+        /// Output file (default: stdout)
+        #[arg(long, short)]
+        output: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum TemplateAction {
+    /// List available templates
+    List,
+    /// Create secrets from a template
+    Use {
+        /// Template name (e.g., google-oauth, stripe, supabase)
+        name: String,
+        /// Comma-separated project tags to assign
+        #[arg(long)]
+        projects: Option<String>,
+        /// Expiry date (YYYY-MM-DD)
+        #[arg(long)]
+        expires: Option<String>,
+        /// Custom prefix for env var names (e.g., MYAPP_)
+        #[arg(long)]
+        prefix: Option<String>,
+    },
 }

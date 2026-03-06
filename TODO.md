@@ -4,11 +4,11 @@
 
 ## P0 — Core (自用必备)
 
-- [ ] **修改密码** — `keyflow passwd`，重新加密所有数据，不丢失
-- [ ] **数据备份/恢复** — `keyflow backup` / `keyflow restore`，导出加密包
-- [ ] **import 覆盖策略** — 导入 .env 遇到同名 key 可选 覆盖/跳过/重命名
-- [ ] **Key Group** — 一组关联密钥（如 Google OAuth: client_id + secret + redirect_uri），一次添加/导出
-- [ ] **模板系统** — `keyflow template google-oauth` 预设标准字段，减少手动输入
+- [x] ~~修改密码~~ — `keyflow passwd`，重新加密所有数据，不丢失
+- [x] ~~数据备份/恢复~~ — `keyflow backup` / `keyflow restore`
+- [x] ~~import 覆盖策略~~ — `--on-conflict overwrite|skip|rename`
+- [x] ~~Key Group~~ — `key_group` 字段 + `keyflow group list/show/export`
+- [x] ~~模板系统~~ — `keyflow template list/use`，14 个预设模板（Google OAuth, GitHub, CF, AWS, Stripe, Supabase...）
 
 ## P1 — 体验提升
 
@@ -43,3 +43,4 @@
 - [x] 交互式 + 非交互式双模式
 - [x] GitHub 仓库创建 + 推送
 - [x] MCP 全局配置 (~/.claude/.mcp.json)
+- [x] P0: passwd / backup / restore / import conflict / groups / templates (14 presets)

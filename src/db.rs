@@ -15,6 +15,7 @@ impl Database {
         let conn = Connection::open(db_path)?;
         let db = Self { conn, crypto };
         db.init_tables()?;
+        db.migrate()?;
         Ok(db)
     }
 
@@ -43,14 +44,31 @@ impl Database {
         Ok(())
     }
 
+    fn migrate(&self) -> Result<()> {
+        // Add key_group column if missing (v0.2.0 migration)
+        let has_key_group: bool = self
+            .conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('secrets') WHERE name='key_group'")?
+            .query_row([], |row| row.get::<_, i64>(0))
+            .map(|c| c > 0)?;
+
+        if !has_key_group {
+            self.conn.execute_batch(
+                "ALTER TABLE secrets ADD COLUMN key_group TEXT NOT NULL DEFAULT '';
+                 CREATE INDEX IF NOT EXISTS idx_secrets_key_group ON secrets(key_group);",
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn add_secret(&self, entry: &SecretEntry, value: &str) -> Result<()> {
         let encrypted = self.crypto.encrypt(value.as_bytes())?;
         let scopes_json = serde_json::to_string(&entry.scopes)?;
         let projects_json = serde_json::to_string(&entry.projects)?;
 
         self.conn.execute(
-            "INSERT INTO secrets (id, name, env_var, encrypted_value, provider, description, scopes, projects, apply_url, expires_at, created_at, updated_at, is_active)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT INTO secrets (id, name, env_var, encrypted_value, provider, description, scopes, projects, apply_url, expires_at, created_at, updated_at, is_active, key_group)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 entry.id,
                 entry.name,
@@ -65,6 +83,7 @@ impl Database {
                 entry.created_at.to_rfc3339(),
                 entry.updated_at.to_rfc3339(),
                 entry.is_active,
+                entry.key_group,
             ],
         )?;
         Ok(())
@@ -72,7 +91,7 @@ impl Database {
 
     pub fn list_secrets(&self, filter: &ListFilter) -> Result<Vec<SecretEntry>> {
         let mut sql = String::from(
-            "SELECT id, name, env_var, provider, description, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, is_active FROM secrets WHERE 1=1",
+            "SELECT id, name, env_var, provider, description, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, is_active, key_group FROM secrets WHERE 1=1",
         );
         let mut bind_values: Vec<String> = Vec::new();
 
@@ -84,11 +103,15 @@ impl Database {
             bind_values.push(format!("%\"{}\"%" , project));
             sql.push_str(&format!(" AND projects LIKE ?{}", bind_values.len()));
         }
+        if let Some(ref group) = filter.group {
+            bind_values.push(group.clone());
+            sql.push_str(&format!(" AND key_group = ?{}", bind_values.len()));
+        }
         if !filter.inactive {
             sql.push_str(" AND is_active = 1");
         }
 
-        sql.push_str(" ORDER BY provider, name");
+        sql.push_str(" ORDER BY provider, key_group, name");
 
         let mut stmt = self.conn.prepare(&sql)?;
         let params: Vec<&dyn rusqlite::types::ToSql> =
@@ -116,7 +139,7 @@ impl Database {
 
     pub fn get_secret(&self, name: &str) -> Result<SecretEntry> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, env_var, provider, description, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, is_active FROM secrets WHERE name = ?1",
+            "SELECT id, name, env_var, provider, description, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, is_active, key_group FROM secrets WHERE name = ?1",
         )?;
         let entry = stmt
             .query_row(params![name], |row| Ok(self.row_to_entry(row)))
@@ -169,6 +192,7 @@ impl Database {
         apply_url: Option<&str>,
         expires_at: Option<Option<DateTime<Utc>>>,
         is_active: Option<bool>,
+        key_group: Option<&str>,
     ) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         let mut updates = vec!["updated_at = ?1".to_string()];
@@ -210,8 +234,13 @@ impl Database {
             updates.push(format!("is_active = ?{}", bind_idx));
             bind_idx += 1;
         }
+        if let Some(g) = key_group {
+            bind_values.push(g.to_string());
+            updates.push(format!("key_group = ?{}", bind_idx));
+            bind_idx += 1;
+        }
 
-        let _ = bind_idx; // suppress unused warning
+        let _ = bind_idx;
         bind_values.push(name.to_string());
         let sql = format!(
             "UPDATE secrets SET {} WHERE name = ?{}",
@@ -228,9 +257,9 @@ impl Database {
     pub fn search_secrets(&self, query: &str) -> Result<Vec<SecretEntry>> {
         let pattern = format!("%{}%", query);
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, env_var, provider, description, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, is_active
+            "SELECT id, name, env_var, provider, description, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, is_active, key_group
              FROM secrets
-             WHERE name LIKE ?1 OR env_var LIKE ?1 OR provider LIKE ?1 OR description LIKE ?1 OR scopes LIKE ?1 OR projects LIKE ?1
+             WHERE name LIKE ?1 OR env_var LIKE ?1 OR provider LIKE ?1 OR description LIKE ?1 OR scopes LIKE ?1 OR projects LIKE ?1 OR key_group LIKE ?1
              ORDER BY name",
         )?;
         let rows = stmt.query_map(params![pattern], |row| Ok(self.row_to_entry(row)))?;
@@ -241,15 +270,12 @@ impl Database {
         Ok(entries)
     }
 
-    pub fn get_all_for_env(&self, project: Option<&str>) -> Result<Vec<(String, String)>> {
-        let entries = if let Some(proj) = project {
-            self.list_secrets(&ListFilter {
-                project: Some(proj.to_string()),
-                ..Default::default()
-            })?
-        } else {
-            self.list_secrets(&ListFilter::default())?
-        };
+    pub fn get_all_for_env(&self, project: Option<&str>, group: Option<&str>) -> Result<Vec<(String, String)>> {
+        let entries = self.list_secrets(&ListFilter {
+            project: project.map(|s| s.to_string()),
+            group: group.map(|s| s.to_string()),
+            ..Default::default()
+        })?;
 
         let mut result = Vec::new();
         for entry in &entries {
@@ -265,6 +291,51 @@ impl Database {
             .prepare("SELECT COUNT(*) FROM secrets WHERE name = ?1")?;
         let count: i64 = stmt.query_row(params![name], |row| row.get(0))?;
         Ok(count > 0)
+    }
+
+    /// Get all raw encrypted data for re-encryption (passwd command)
+    pub fn get_all_raw(&self) -> Result<Vec<(String, Vec<u8>)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name, encrypted_value FROM secrets")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
+    }
+
+    /// Decrypt a value using the current crypto
+    pub fn decrypt_raw(&self, encrypted: &[u8]) -> Result<Vec<u8>> {
+        self.crypto.decrypt(encrypted)
+    }
+
+    /// Re-encrypt and update a secret with new crypto
+    pub fn reencrypt_secret(&self, name: &str, plaintext: &[u8], new_crypto: &Crypto) -> Result<()> {
+        let new_encrypted = new_crypto.encrypt(plaintext)?;
+        self.conn.execute(
+            "UPDATE secrets SET encrypted_value = ?1 WHERE name = ?2",
+            params![new_encrypted, name],
+        )?;
+        Ok(())
+    }
+
+    /// List distinct groups
+    pub fn list_groups(&self) -> Result<Vec<(String, usize)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT key_group, COUNT(*) FROM secrets WHERE key_group != '' AND is_active = 1 GROUP BY key_group ORDER BY key_group",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        Ok(result)
     }
 
     fn row_to_entry(&self, row: &rusqlite::Row) -> Result<SecretEntry> {
@@ -291,6 +362,7 @@ impl Database {
                 .unwrap_or_else(|_| Utc::now()),
             last_used_at: last_used_str.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc))),
             is_active: row.get(12)?,
+            key_group: row.get(13)?,
         })
     }
 }

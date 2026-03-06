@@ -218,6 +218,7 @@ fn secret_to_metadata(entry: &crate::models::SecretEntry) -> Value {
         "description": entry.description,
         "scopes": entry.scopes,
         "projects": entry.projects,
+        "key_group": entry.key_group,
         "apply_url": entry.apply_url,
         "status": entry.status().to_string(),
         "expires_at": entry.expires_at.map(|d| d.to_rfc3339()),
