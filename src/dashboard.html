@@ -240,7 +240,7 @@ body::after {
 }
 
 .filter-select {
-  background: var(--bg-card);
+  background-color: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 12px 16px;
@@ -250,11 +250,20 @@ body::after {
   outline: none;
   cursor: pointer;
   min-width: 140px;
+  -webkit-appearance: none;
+  -moz-appearance: none;
   appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%238892a4' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 12px center;
   padding-right: 32px;
+  color-scheme: dark;
+}
+
+.filter-select option {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  padding: 8px;
 }
 
 .filter-select:focus {
@@ -277,17 +286,14 @@ body::after {
 
 .secrets-table th {
   text-align: left;
-  padding: 14px 16px;
+  padding: 12px 16px;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 1.5px;
-  color: var(--text-dim);
+  color: var(--text-secondary);
   font-weight: 600;
   background: var(--bg-surface);
-  border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 73px;
-  z-index: 10;
+  border-bottom: 2px solid var(--border-bright);
 }
 
 .secrets-table td {
