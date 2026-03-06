@@ -32,7 +32,7 @@ fn main() -> Result<()> {
 
         Commands::Add {
             env_var, value, provider, projects, group, desc, expires, paste,
-        } => commands::cmd_add(env_var, value, provider, projects, group, desc, expires, paste),
+        } => commands::cmd_add(commands::AddArgs { env_var, value, provider, projects, group, desc, expires, paste }),
 
         Commands::List {
             provider, project, group, expiring, inactive,
@@ -45,7 +45,7 @@ fn main() -> Result<()> {
         Commands::Update {
             name, value, provider, desc,
             scopes, projects, url, expires, active, group,
-        } => commands::cmd_update(name, value, provider, desc, scopes, projects, url, expires, active, group),
+        } => commands::cmd_update(commands::UpdateArgs { name, value, provider, desc, scopes, projects, url, expires, active, group }),
 
         Commands::Run { project, group, all, command } => commands::cmd_run(project, group, all, command),
 

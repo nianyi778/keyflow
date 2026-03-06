@@ -632,7 +632,7 @@ fn render_health_section(frame: &mut Frame, title: &str, entries: &[SecretEntry]
         let msg = Paragraph::new(Line::from(vec![
             Span::styled("  ", Style::default()),
             Span::styled("OK", Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" - No issues"), Style::default().fg(C_DIM)),
+            Span::styled(" - No issues".to_string(), Style::default().fg(C_DIM)),
         ]))
         .block(Block::default()
             .borders(Borders::ALL)

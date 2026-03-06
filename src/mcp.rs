@@ -12,15 +12,10 @@ pub fn serve(db: &Database) -> Result<()> {
     let stdout = std::io::stdout();
     let mut reader = BufReader::new(stdin.lock());
 
-    loop {
-        match read_message(&mut reader)? {
-            Some(msg) => {
-                let response = handle_message(db, &msg);
-                if let Some(resp) = response {
-                    write_message(&mut stdout.lock(), &resp)?;
-                }
-            }
-            None => break, // EOF
+    while let Some(msg) = read_message(&mut reader)? {
+        let response = handle_message(db, &msg);
+        if let Some(resp) = response {
+            write_message(&mut stdout.lock(), &resp)?;
         }
     }
     Ok(())
@@ -68,11 +63,7 @@ fn handle_message(db: &Database, msg: &Value) -> Option<Value> {
     let id = msg.get("id");
 
     // Notifications (no id) don't need a response
-    if id.is_none() {
-        return None;
-    }
-
-    let id = id.unwrap().clone();
+    let id = id?.clone();
     let params = msg.get("params").cloned().unwrap_or(json!({}));
 
     let result = match method {

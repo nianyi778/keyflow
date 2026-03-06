@@ -10,6 +10,30 @@ use crate::crypto::Crypto;
 use crate::db::Database;
 use crate::models::{AppConfig, ListFilter, SecretEntry, TEMPLATES};
 
+pub struct AddArgs {
+    pub env_var: Option<String>,
+    pub value: Option<String>,
+    pub provider: Option<String>,
+    pub projects: Option<String>,
+    pub group: Option<String>,
+    pub desc: Option<String>,
+    pub expires: Option<String>,
+    pub paste: bool,
+}
+
+pub struct UpdateArgs {
+    pub name: Option<String>,
+    pub value: Option<String>,
+    pub provider: Option<String>,
+    pub desc: Option<String>,
+    pub scopes: Option<String>,
+    pub projects: Option<String>,
+    pub url: Option<String>,
+    pub expires: Option<String>,
+    pub active: Option<bool>,
+    pub group: Option<String>,
+}
+
 const PROVIDERS: &[&str] = &[
     "google",
     "github",
@@ -484,16 +508,8 @@ fn detect_project_name() -> Option<String> {
     None
 }
 
-pub fn cmd_add(
-    env_var: Option<String>,
-    value: Option<String>,
-    provider: Option<String>,
-    projects: Option<String>,
-    group: Option<String>,
-    desc: Option<String>,
-    expires: Option<String>,
-    paste: bool,
-) -> Result<()> {
+pub fn cmd_add(args: AddArgs) -> Result<()> {
+    let AddArgs { env_var, value, provider, projects, group, desc, expires, paste } = args;
     let db = open_db()?;
 
     let parse_csv = |s: String| -> Vec<String> {
@@ -761,18 +777,8 @@ pub fn cmd_remove(name: Option<String>, force: bool) -> Result<()> {
 
 // === UPDATE ===
 
-pub fn cmd_update(
-    name: Option<String>,
-    value: Option<String>,
-    provider: Option<String>,
-    desc: Option<String>,
-    scopes: Option<String>,
-    projects: Option<String>,
-    url: Option<String>,
-    expires: Option<String>,
-    active: Option<bool>,
-    group: Option<String>,
-) -> Result<()> {
+pub fn cmd_update(args: UpdateArgs) -> Result<()> {
+    let UpdateArgs { name, value, provider, desc, scopes, projects, url, expires, active, group } = args;
     let db = open_db()?;
     let name = match name {
         Some(n) => {
@@ -805,17 +811,16 @@ pub fn cmd_update(
         None => None,
     };
 
-    db.update_secret_metadata(
-        &name,
-        provider.as_deref(),
-        desc.as_deref(),
-        scopes_vec.as_deref(),
-        projects_vec.as_deref(),
-        url.as_deref(),
+    db.update_secret_metadata(&name, &crate::db::MetadataUpdate {
+        provider: provider.as_deref(),
+        description: desc.as_deref(),
+        scopes: scopes_vec.as_deref(),
+        projects: projects_vec.as_deref(),
+        apply_url: url.as_deref(),
         expires_at,
-        active,
-        group.as_deref(),
-    )?;
+        is_active: active,
+        key_group: group.as_deref(),
+    })?;
 
     println!(
         "{} Metadata updated for '{}'",

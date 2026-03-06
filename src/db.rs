@@ -5,6 +5,18 @@ use rusqlite::{params, Connection};
 use crate::crypto::Crypto;
 use crate::models::{ListFilter, SecretEntry};
 
+#[derive(Default)]
+pub struct MetadataUpdate<'a> {
+    pub provider: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub scopes: Option<&'a [String]>,
+    pub projects: Option<&'a [String]>,
+    pub apply_url: Option<&'a str>,
+    pub expires_at: Option<Option<DateTime<Utc>>>,
+    pub is_active: Option<bool>,
+    pub key_group: Option<&'a str>,
+}
+
 pub struct Database {
     conn: Connection,
     crypto: Crypto,
@@ -182,18 +194,8 @@ impl Database {
         Ok(())
     }
 
-    pub fn update_secret_metadata(
-        &self,
-        name: &str,
-        provider: Option<&str>,
-        description: Option<&str>,
-        scopes: Option<&[String]>,
-        projects: Option<&[String]>,
-        apply_url: Option<&str>,
-        expires_at: Option<Option<DateTime<Utc>>>,
-        is_active: Option<bool>,
-        key_group: Option<&str>,
-    ) -> Result<()> {
+    pub fn update_secret_metadata(&self, name: &str, update: &MetadataUpdate<'_>) -> Result<()> {
+        let MetadataUpdate { provider, description, scopes, projects, apply_url, expires_at, is_active, key_group } = update;
         let now = Utc::now().to_rfc3339();
         let mut updates = vec!["updated_at = ?1".to_string()];
         let mut bind_idx = 2;
@@ -229,7 +231,7 @@ impl Database {
             updates.push(format!("expires_at = ?{}", bind_idx));
             bind_idx += 1;
         }
-        if let Some(a) = is_active {
+        if let Some(a) = *is_active {
             bind_values.push(if a { "1".to_string() } else { "0".to_string() });
             updates.push(format!("is_active = ?{}", bind_idx));
             bind_idx += 1;
