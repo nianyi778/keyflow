@@ -33,7 +33,7 @@ path = "src/main.rs"
 
 [[bin]]
 name = "kf"
-path = "src/main.rs"
+path = "src/bin/kf.rs"
 
 [profile.release]
 opt-level = "z"
