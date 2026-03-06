@@ -222,8 +222,12 @@ pub enum Commands {
         shell: clap_complete::Shell,
     },
 
-    /// Start local web dashboard
-    Dashboard {
+    /// Launch interactive TUI
+    Ui,
+
+    /// Open local web dashboard
+    #[command(alias = "dashboard")]
+    Web {
         /// Port to listen on
         #[arg(long, default_value = "9876")]
         port: u16,

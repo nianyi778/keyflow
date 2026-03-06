@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KeyFlow — Vault Dashboard</title>
 <style>
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
 
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -14,6 +14,7 @@
   --bg-card: #111827;
   --bg-card-hover: #1a2332;
   --bg-surface: #0f1520;
+  --bg-dropdown: #141c2b;
   --border: #1e293b;
   --border-bright: #2d3f56;
   --text-primary: #e2e8f0;
@@ -31,9 +32,10 @@
   --accent-purple-dim: rgba(167, 139, 250, 0.12);
   --accent-blue: #60a5fa;
   --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
-  --font-sans: 'Space Grotesk', -apple-system, sans-serif;
+  --font-sans: 'IBM Plex Sans', -apple-system, system-ui, sans-serif;
   --radius: 10px;
   --radius-sm: 6px;
+  --transition: 200ms ease;
 }
 
 body {
@@ -60,6 +62,15 @@ body::after {
   z-index: 9999;
 }
 
+/* SVG icon base */
+.icon-svg {
+  width: 16px;
+  height: 16px;
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
 /* Header */
 .header {
   padding: 24px 32px;
@@ -81,18 +92,13 @@ body::after {
 }
 
 .logo-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+  width: 38px;
+  height: 38px;
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--bg-deep);
-  font-family: var(--font-mono);
-  box-shadow: 0 0 20px rgba(34, 211, 238, 0.25);
+  filter: drop-shadow(0 0 12px rgba(34, 211, 238, 0.35));
 }
 
 .logo h1 {
@@ -103,6 +109,41 @@ body::after {
 }
 
 .logo h1 span { color: var(--accent-cyan); }
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.lang-switcher {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.lang-btn {
+  padding: 4px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all var(--transition);
+}
+
+.lang-btn:hover { color: var(--text-secondary); }
+.lang-btn:focus-visible { outline: 2px solid var(--accent-cyan); outline-offset: -1px; }
+
+.lang-btn.active {
+  background: var(--accent-cyan-dim);
+  color: var(--accent-cyan);
+}
 
 .vault-status {
   display: flex;
@@ -148,7 +189,8 @@ body::after {
   padding: 20px;
   position: relative;
   overflow: hidden;
-  transition: all 0.2s;
+  transition: all var(--transition);
+  cursor: default;
 }
 
 .stat-card:hover {
@@ -160,9 +202,7 @@ body::after {
 .stat-card::before {
   content: '';
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
+  top: 0; left: 0; right: 0;
   height: 2px;
 }
 
@@ -172,12 +212,26 @@ body::after {
 .stat-card.expiring::before { background: var(--accent-yellow); }
 .stat-card.groups::before { background: var(--accent-purple); }
 
+.stat-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.stat-icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .stat-label {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 1.2px;
   color: var(--text-secondary);
-  margin-bottom: 8px;
   font-weight: 500;
 }
 
@@ -188,11 +242,16 @@ body::after {
   line-height: 1;
 }
 
-.stat-card.total .stat-value { color: var(--accent-cyan); }
-.stat-card.active .stat-value { color: var(--accent-green); }
-.stat-card.expired .stat-value { color: var(--accent-red); }
-.stat-card.expiring .stat-value { color: var(--accent-yellow); }
-.stat-card.groups .stat-value { color: var(--accent-purple); }
+.stat-card.total .stat-value,
+.stat-card.total .stat-icon svg { color: var(--accent-cyan); }
+.stat-card.active .stat-value,
+.stat-card.active .stat-icon svg { color: var(--accent-green); }
+.stat-card.expired .stat-value,
+.stat-card.expired .stat-icon svg { color: var(--accent-red); }
+.stat-card.expiring .stat-value,
+.stat-card.expiring .stat-icon svg { color: var(--accent-yellow); }
+.stat-card.groups .stat-value,
+.stat-card.groups .stat-icon svg { color: var(--accent-purple); }
 
 /* Search & Filters */
 .controls {
@@ -219,7 +278,7 @@ body::after {
   font-family: var(--font-mono);
   font-size: 13px;
   outline: none;
-  transition: border-color 0.2s;
+  transition: border-color var(--transition), box-shadow var(--transition);
 }
 
 .search-box input:focus {
@@ -229,46 +288,113 @@ body::after {
 
 .search-box input::placeholder { color: var(--text-dim); }
 
-.search-box::before {
-  content: '⌕';
+.search-icon {
   position: absolute;
   left: 14px;
   top: 50%;
   transform: translateY(-50%);
   color: var(--text-dim);
-  font-size: 16px;
+  pointer-events: none;
 }
 
-.filter-select {
-  background-color: var(--bg-card);
+/* Custom Dropdown */
+.custom-dropdown {
+  position: relative;
+  min-width: 140px;
+}
+
+.dropdown-trigger {
+  background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 12px 16px;
+  padding: 12px 32px 12px 16px;
   color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: 12px;
-  outline: none;
   cursor: pointer;
-  min-width: 140px;
-  -webkit-appearance: none;
-  -moz-appearance: none;
-  appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%238892a4' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
-  padding-right: 32px;
-  color-scheme: dark;
+  width: 100%;
+  text-align: left;
+  transition: border-color var(--transition), box-shadow var(--transition);
+  position: relative;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.filter-select option {
-  background: var(--bg-card);
-  color: var(--text-primary);
-  padding: 8px;
+.dropdown-trigger::after {
+  content: '';
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0; height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--text-secondary);
+  transition: transform var(--transition);
 }
 
-.filter-select:focus {
+.custom-dropdown.open .dropdown-trigger::after {
+  transform: translateY(-50%) rotate(180deg);
+}
+
+.dropdown-trigger:hover,
+.custom-dropdown.open .dropdown-trigger {
   border-color: var(--accent-cyan);
 }
+
+.dropdown-trigger:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: -1px;
+}
+
+.custom-dropdown.open .dropdown-trigger {
+  box-shadow: 0 0 0 3px var(--accent-cyan-dim);
+}
+
+.dropdown-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--bg-dropdown);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  z-index: 200;
+  padding: 4px;
+}
+
+.custom-dropdown.open .dropdown-menu { display: block; }
+
+.dropdown-item {
+  padding: 9px 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: all 120ms ease;
+  white-space: nowrap;
+}
+
+.dropdown-item:hover {
+  background: var(--accent-cyan-dim);
+  color: var(--text-primary);
+}
+
+.dropdown-item.selected {
+  color: var(--accent-cyan);
+  background: var(--accent-cyan-dim);
+}
+
+.dropdown-menu::-webkit-scrollbar { width: 4px; }
+.dropdown-menu::-webkit-scrollbar-track { background: transparent; }
+.dropdown-menu::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 2px; }
 
 /* Table */
 .table-wrapper {
@@ -423,11 +549,15 @@ body::after {
 .link-icon {
   color: var(--text-dim);
   text-decoration: none;
-  font-size: 14px;
-  transition: color 0.2s;
+  transition: color var(--transition);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .link-icon:hover { color: var(--accent-cyan); }
+.link-icon:focus-visible { outline: 2px solid var(--accent-cyan); outline-offset: 2px; border-radius: 2px; }
 
 /* Health Panel */
 .panels-grid {
@@ -473,7 +603,7 @@ body::after {
   justify-content: space-between;
   font-size: 13px;
   border-bottom: 1px solid var(--border);
-  transition: background 0.15s;
+  transition: background 150ms ease;
 }
 
 .panel-item:last-child { border-bottom: none; }
@@ -488,6 +618,9 @@ body::after {
   font-size: 11px;
   color: var(--text-dim);
   font-family: var(--font-mono);
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .panel-empty {
@@ -495,9 +628,11 @@ body::after {
   text-align: center;
   color: var(--text-dim);
   font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
 }
-
-.panel-empty .check { font-size: 20px; display: block; margin-bottom: 6px; }
 
 /* Footer */
 .footer {
@@ -537,9 +672,12 @@ body::after {
   text-align: center;
   padding: 48px 24px;
   color: var(--text-dim);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
 }
 
-.empty-state .icon { font-size: 36px; margin-bottom: 12px; }
 .empty-state p { font-size: 14px; }
 
 /* Responsive */
@@ -549,30 +687,47 @@ body::after {
 }
 
 @media (max-width: 768px) {
-  .header { padding: 16px; }
+  .header { padding: 16px; flex-wrap: wrap; gap: 12px; }
   .main { padding: 16px; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .controls { flex-direction: column; }
   .search-box { min-width: 100%; }
+  .custom-dropdown { width: 100%; }
   .table-wrapper { overflow-x: auto; }
   .secrets-table { min-width: 800px; }
 }
 
-/* Transition */
+/* Transitions */
 .fade-in { animation: fadeIn 0.3s ease-out; }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
 </style>
 </head>
 <body>
 
 <header class="header">
   <div class="logo">
-    <div class="logo-icon">K</div>
+    <div class="logo-icon"><svg width="38" height="38" viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="lg1" x1="0" y1="0" x2="38" y2="38" gradientUnits="userSpaceOnUse"><stop stop-color="#22d3ee"/><stop offset="1" stop-color="#a78bfa"/></linearGradient><linearGradient id="lg2" x1="8" y1="10" x2="30" y2="30" gradientUnits="userSpaceOnUse"><stop stop-color="#22d3ee"/><stop offset="1" stop-color="#818cf8"/></linearGradient></defs><rect width="38" height="38" rx="10" fill="url(#lg1)" opacity="0.15"/><rect x="1" y="1" width="36" height="36" rx="9" stroke="url(#lg1)" stroke-width="1.5" fill="none" opacity="0.4"/><g transform="translate(7, 7)"><circle cx="8.5" cy="15" r="5" stroke="url(#lg2)" stroke-width="2" fill="none"/><circle cx="8.5" cy="15" r="1.8" fill="url(#lg2)"/><line x1="13.5" y1="15" x2="22" y2="15" stroke="url(#lg2)" stroke-width="2" stroke-linecap="round"/><line x1="18" y1="15" x2="18" y2="11" stroke="url(#lg2)" stroke-width="2" stroke-linecap="round"/><line x1="22" y1="15" x2="22" y2="11" stroke="url(#lg2)" stroke-width="2" stroke-linecap="round"/><path d="M2 5 C8 2, 16 8, 22 5" stroke="var(--accent-cyan)" stroke-width="1.2" fill="none" opacity="0.5" stroke-linecap="round"><animate attributeName="d" values="M2 5 C8 2, 16 8, 22 5;M2 5 C8 8, 16 2, 22 5;M2 5 C8 2, 16 8, 22 5" dur="3s" repeatCount="indefinite"/></path></g></svg></div>
     <h1>Key<span>Flow</span></h1>
   </div>
-  <div class="vault-status">
-    <div class="vault-dot"></div>
-    <span>VAULT UNLOCKED</span>
+  <div class="header-right">
+    <div class="lang-switcher">
+      <button class="lang-btn active" data-lang="en" aria-label="English">EN</button>
+      <button class="lang-btn" data-lang="zh" aria-label="Chinese">ZH</button>
+      <button class="lang-btn" data-lang="ja" aria-label="Japanese">JA</button>
+    </div>
+    <div class="vault-status">
+      <div class="vault-dot" aria-hidden="true"></div>
+      <span data-i18n="vault_unlocked">VAULT UNLOCKED</span>
+    </div>
   </div>
 </header>
 
@@ -580,24 +735,39 @@ body::after {
   <!-- Stats -->
   <div class="stats-grid" id="stats">
     <div class="stat-card total">
-      <div class="stat-label">Total Keys</div>
-      <div class="stat-value" id="stat-total">—</div>
+      <div class="stat-header">
+        <div class="stat-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg></div>
+        <div class="stat-label" data-i18n="total_keys">Total Keys</div>
+      </div>
+      <div class="stat-value" id="stat-total">&mdash;</div>
     </div>
     <div class="stat-card active">
-      <div class="stat-label">Active</div>
-      <div class="stat-value" id="stat-active">—</div>
+      <div class="stat-header">
+        <div class="stat-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>
+        <div class="stat-label" data-i18n="active">Active</div>
+      </div>
+      <div class="stat-value" id="stat-active">&mdash;</div>
     </div>
     <div class="stat-card expired">
-      <div class="stat-label">Expired</div>
-      <div class="stat-value" id="stat-expired">—</div>
+      <div class="stat-header">
+        <div class="stat-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg></div>
+        <div class="stat-label" data-i18n="expired">Expired</div>
+      </div>
+      <div class="stat-value" id="stat-expired">&mdash;</div>
     </div>
     <div class="stat-card expiring">
-      <div class="stat-label">Expiring Soon</div>
-      <div class="stat-value" id="stat-expiring">—</div>
+      <div class="stat-header">
+        <div class="stat-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+        <div class="stat-label" data-i18n="expiring_soon">Expiring Soon</div>
+      </div>
+      <div class="stat-value" id="stat-expiring">&mdash;</div>
     </div>
     <div class="stat-card groups">
-      <div class="stat-label">Groups</div>
-      <div class="stat-value" id="stat-groups">—</div>
+      <div class="stat-header">
+        <div class="stat-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></div>
+        <div class="stat-label" data-i18n="groups">Groups</div>
+      </div>
+      <div class="stat-value" id="stat-groups">&mdash;</div>
     </div>
   </div>
 
@@ -605,13 +775,17 @@ body::after {
   <div class="panels-grid" id="health-panels" style="display:none">
     <div class="panel" id="panel-expired">
       <div class="panel-header" style="color:var(--accent-red)">
-        ✗ Expired Keys <span class="count" id="expired-count">0</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+        <span data-i18n="expired_keys">Expired Keys</span>
+        <span class="count" id="expired-count">0</span>
       </div>
       <div class="panel-body" id="expired-list"></div>
     </div>
     <div class="panel" id="panel-expiring">
       <div class="panel-header" style="color:var(--accent-yellow)">
-        ⚠ Expiring Soon <span class="count" id="expiring-count">0</span>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <span data-i18n="expiring_soon_keys">Expiring Soon</span>
+        <span class="count" id="expiring-count">0</span>
       </div>
       <div class="panel-body" id="expiring-list"></div>
     </div>
@@ -620,46 +794,229 @@ body::after {
   <!-- Controls -->
   <div class="controls">
     <div class="search-box">
-      <input type="text" id="search" placeholder="Search keys, providers, env vars..." autocomplete="off">
+      <div class="search-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
+      <input type="text" id="search" data-i18n-placeholder="search_placeholder" placeholder="Search keys, providers, env vars..." autocomplete="off" aria-label="Search secrets">
     </div>
-    <select class="filter-select" id="filter-provider">
-      <option value="">All Providers</option>
-    </select>
-    <select class="filter-select" id="filter-project">
-      <option value="">All Projects</option>
-    </select>
-    <select class="filter-select" id="filter-group">
-      <option value="">All Groups</option>
-    </select>
+    <div class="custom-dropdown" id="dd-provider">
+      <div class="dropdown-trigger" tabindex="0" role="button" aria-haspopup="listbox" data-i18n="all_providers">All Providers</div>
+      <div class="dropdown-menu" role="listbox"></div>
+    </div>
+    <div class="custom-dropdown" id="dd-project">
+      <div class="dropdown-trigger" tabindex="0" role="button" aria-haspopup="listbox" data-i18n="all_projects">All Projects</div>
+      <div class="dropdown-menu" role="listbox"></div>
+    </div>
+    <div class="custom-dropdown" id="dd-group">
+      <div class="dropdown-trigger" tabindex="0" role="button" aria-haspopup="listbox" data-i18n="all_groups">All Groups</div>
+      <div class="dropdown-menu" role="listbox"></div>
+    </div>
   </div>
 
   <!-- Table -->
   <div class="table-wrapper">
-    <table class="secrets-table">
+    <table class="secrets-table" role="table">
       <thead>
         <tr>
-          <th>Name</th>
-          <th>Env Var</th>
-          <th>Provider</th>
-          <th>Group</th>
-          <th>Projects</th>
-          <th>Expires</th>
-          <th>Status</th>
+          <th data-i18n="th_name">Name</th>
+          <th data-i18n="th_env_var">Env Var</th>
+          <th data-i18n="th_provider">Provider</th>
+          <th data-i18n="th_group">Group</th>
+          <th data-i18n="th_projects">Projects</th>
+          <th data-i18n="th_expires">Expires</th>
+          <th data-i18n="th_status">Status</th>
           <th></th>
         </tr>
       </thead>
       <tbody id="secrets-body">
-        <tr><td colspan="8"><div class="loading"><div class="spinner"></div>Loading vault...</div></td></tr>
+        <tr><td colspan="8"><div class="loading"><div class="spinner"></div><span data-i18n="loading">Loading vault...</span></div></td></tr>
       </tbody>
     </table>
   </div>
 </main>
 
 <footer class="footer">
-  KeyFlow v0.2.0 — AI-Native Secret Manager — 127.0.0.1 only
+  KeyFlow v0.2.0 &mdash; AI-Native Secret Manager &mdash; 127.0.0.1 only
 </footer>
 
 <script>
+// ── SVG Icon Templates ───────────────────────────────
+const SVG = {
+  key: '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>',
+  check: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
+  extLink: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>',
+  alert: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+  checkCircle: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
+};
+
+// ── i18n ─────────────────────────────────────────────
+const I18N = {
+  en: {
+    vault_unlocked: 'VAULT UNLOCKED',
+    total_keys: 'Total Keys',
+    active: 'Active',
+    expired: 'Expired',
+    expiring_soon: 'Expiring Soon',
+    groups: 'Groups',
+    expired_keys: 'Expired Keys',
+    expiring_soon_keys: 'Expiring Soon',
+    search_placeholder: 'Search keys, providers, env vars...',
+    all_providers: 'All Providers',
+    all_projects: 'All Projects',
+    all_groups: 'All Groups',
+    th_name: 'Name',
+    th_env_var: 'Env Var',
+    th_provider: 'Provider',
+    th_group: 'Group',
+    th_projects: 'Projects',
+    th_expires: 'Expires',
+    th_status: 'Status',
+    loading: 'Loading vault...',
+    no_secrets: 'No secrets found',
+    no_expired: 'No expired keys',
+    no_expiring: 'No keys expiring soon',
+    renew: 'renew',
+    load_failed: 'Failed to load',
+  },
+  zh: {
+    vault_unlocked: '\u5BC6\u94A5\u5E93\u5DF2\u89E3\u9501',
+    total_keys: '\u5BC6\u94A5\u603B\u6570',
+    active: '\u6D3B\u8DC3',
+    expired: '\u5DF2\u8FC7\u671F',
+    expiring_soon: '\u5373\u5C06\u8FC7\u671F',
+    groups: '\u5206\u7EC4',
+    expired_keys: '\u5DF2\u8FC7\u671F\u5BC6\u94A5',
+    expiring_soon_keys: '\u5373\u5C06\u8FC7\u671F',
+    search_placeholder: '\u641C\u7D22\u5BC6\u94A5\u3001\u63D0\u4F9B\u5546\u3001\u73AF\u5883\u53D8\u91CF...',
+    all_providers: '\u6240\u6709\u63D0\u4F9B\u5546',
+    all_projects: '\u6240\u6709\u9879\u76EE',
+    all_groups: '\u6240\u6709\u5206\u7EC4',
+    th_name: '\u540D\u79F0',
+    th_env_var: '\u73AF\u5883\u53D8\u91CF',
+    th_provider: '\u63D0\u4F9B\u5546',
+    th_group: '\u5206\u7EC4',
+    th_projects: '\u9879\u76EE',
+    th_expires: '\u8FC7\u671F\u65F6\u95F4',
+    th_status: '\u72B6\u6001',
+    loading: '\u52A0\u8F7D\u5BC6\u94A5\u5E93\u4E2D...',
+    no_secrets: '\u672A\u627E\u5230\u5BC6\u94A5',
+    no_expired: '\u6CA1\u6709\u8FC7\u671F\u5BC6\u94A5',
+    no_expiring: '\u6CA1\u6709\u5373\u5C06\u8FC7\u671F\u7684\u5BC6\u94A5',
+    renew: '\u7EED\u671F',
+    load_failed: '\u52A0\u8F7D\u5931\u8D25',
+  },
+  ja: {
+    vault_unlocked: '\u30DC\u30FC\u30EB\u30C8\u89E3\u9320\u6E08\u307F',
+    total_keys: '\u30AD\u30FC\u5408\u8A08',
+    active: '\u30A2\u30AF\u30C6\u30A3\u30D6',
+    expired: '\u671F\u9650\u5207\u308C',
+    expiring_soon: '\u307E\u3082\u306A\u304F\u671F\u9650\u5207\u308C',
+    groups: '\u30B0\u30EB\u30FC\u30D7',
+    expired_keys: '\u671F\u9650\u5207\u308C\u30AD\u30FC',
+    expiring_soon_keys: '\u307E\u3082\u306A\u304F\u671F\u9650\u5207\u308C',
+    search_placeholder: '\u30AD\u30FC\u3001\u30D7\u30ED\u30D0\u30A4\u30C0\u30FC\u3001\u74B0\u5883\u5909\u6570\u3092\u691C\u7D22...',
+    all_providers: '\u3059\u3079\u3066\u306E\u30D7\u30ED\u30D0\u30A4\u30C0\u30FC',
+    all_projects: '\u3059\u3079\u3066\u306E\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8',
+    all_groups: '\u3059\u3079\u3066\u306E\u30B0\u30EB\u30FC\u30D7',
+    th_name: '\u540D\u524D',
+    th_env_var: '\u74B0\u5883\u5909\u6570',
+    th_provider: '\u30D7\u30ED\u30D0\u30A4\u30C0\u30FC',
+    th_group: '\u30B0\u30EB\u30FC\u30D7',
+    th_projects: '\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8',
+    th_expires: '\u6709\u52B9\u671F\u9650',
+    th_status: '\u30B9\u30C6\u30FC\u30BF\u30B9',
+    loading: '\u30DC\u30FC\u30EB\u30C8\u3092\u8AAD\u307F\u8FBC\u307F\u4E2D...',
+    no_secrets: '\u30AD\u30FC\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093',
+    no_expired: '\u671F\u9650\u5207\u308C\u306E\u30AD\u30FC\u306F\u3042\u308A\u307E\u305B\u3093',
+    no_expiring: '\u307E\u3082\u306A\u304F\u671F\u9650\u5207\u308C\u306E\u30AD\u30FC\u306F\u3042\u308A\u307E\u305B\u3093',
+    renew: '\u66F4\u65B0',
+    load_failed: '\u8AAD\u307F\u8FBC\u307F\u5931\u6557',
+  }
+};
+
+let currentLang = (navigator.language || '').startsWith('zh') ? 'zh' :
+                  (navigator.language || '').startsWith('ja') ? 'ja' : 'en';
+
+function t(key) { return (I18N[currentLang] || I18N.en)[key] || I18N.en[key] || key; }
+
+function applyI18n() {
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = t(el.dataset.i18n);
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    el.placeholder = t(el.dataset.i18nPlaceholder);
+  });
+  ['dd-provider', 'dd-project', 'dd-group'].forEach(id => {
+    const dd = document.getElementById(id);
+    if (dd && !dd.dataset.selectedValue) {
+      const key = dd.querySelector('.dropdown-trigger').dataset.i18n;
+      if (key) dd.querySelector('.dropdown-trigger').textContent = t(key);
+    }
+  });
+  document.querySelectorAll('.lang-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.lang === currentLang);
+  });
+}
+
+// ── Custom Dropdown ──────────────────────────────────
+const dropdownState = { provider: '', project: '', group: '' };
+
+function initDropdown(id, filterKey) {
+  const wrapper = document.getElementById(id);
+  const trigger = wrapper.querySelector('.dropdown-trigger');
+
+  function toggle(e) {
+    e.stopPropagation();
+    const wasOpen = wrapper.classList.contains('open');
+    closeAllDropdowns();
+    if (!wasOpen) wrapper.classList.add('open');
+  }
+
+  trigger.addEventListener('click', toggle);
+  trigger.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(e); }
+  });
+
+  wrapper.addEventListener('click', e => {
+    const item = e.target.closest('.dropdown-item');
+    if (!item) return;
+    const value = item.dataset.value;
+    dropdownState[filterKey] = value;
+
+    wrapper.querySelectorAll('.dropdown-item').forEach(i => i.classList.remove('selected'));
+    item.classList.add('selected');
+
+    if (value) {
+      trigger.textContent = item.textContent;
+      wrapper.dataset.selectedValue = value;
+    } else {
+      trigger.textContent = t(trigger.dataset.i18n);
+      delete wrapper.dataset.selectedValue;
+    }
+
+    wrapper.classList.remove('open');
+    applyFilters();
+  });
+}
+
+function closeAllDropdowns() {
+  document.querySelectorAll('.custom-dropdown.open').forEach(d => d.classList.remove('open'));
+}
+
+document.addEventListener('click', closeAllDropdowns);
+
+function populateDropdown(id, items, allLabelKey) {
+  const menu = document.getElementById(id).querySelector('.dropdown-menu');
+  let html = `<div class="dropdown-item selected" data-value="" role="option">${t(allLabelKey)}</div>`;
+  items.forEach(item => {
+    html += `<div class="dropdown-item" data-value="${esc(item)}" role="option">${esc(item)}</div>`;
+  });
+  menu.innerHTML = html;
+}
+
+initDropdown('dd-provider', 'provider');
+initDropdown('dd-project', 'project');
+initDropdown('dd-group', 'group');
+
+// ── App State ────────────────────────────────────────
 let allSecrets = [];
 let healthData = {};
 
@@ -683,7 +1040,7 @@ function providerClass(p) {
 function renderSecrets(secrets) {
   const tbody = document.getElementById('secrets-body');
   if (!secrets.length) {
-    tbody.innerHTML = '<tr><td colspan="8"><div class="empty-state"><div class="icon">🔑</div><p>No secrets found</p></div></td></tr>';
+    tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state">${SVG.key}<p>${t('no_secrets')}</p></div></td></tr>`;
     return;
   }
   tbody.innerHTML = secrets.map(s => `
@@ -691,11 +1048,11 @@ function renderSecrets(secrets) {
       <td><span class="key-name">${esc(s.name)}</span></td>
       <td><span class="env-var">${esc(s.env_var)}</span></td>
       <td><span class="provider-icon ${providerClass(s.provider)}"><span class="badge badge-provider">${esc(s.provider)}</span></span></td>
-      <td>${s.key_group ? `<span class="badge badge-group">${esc(s.key_group)}</span>` : '<span style="color:var(--text-dim)">—</span>'}</td>
-      <td><div class="projects-list">${(s.projects||[]).map(p => `<span class="badge badge-project">${esc(p)}</span>`).join('') || '<span style="color:var(--text-dim)">—</span>'}</div></td>
-      <td><span class="expires-date">${s.expires_at || '—'}</span></td>
+      <td>${s.key_group ? `<span class="badge badge-group">${esc(s.key_group)}</span>` : '<span style="color:var(--text-dim)">&mdash;</span>'}</td>
+      <td><div class="projects-list">${(s.projects||[]).map(p => `<span class="badge badge-project">${esc(p)}</span>`).join('') || '<span style="color:var(--text-dim)">&mdash;</span>'}</div></td>
+      <td><span class="expires-date">${s.expires_at || '&mdash;'}</span></td>
       <td><span class="badge ${getStatusBadgeClass(s.status)}">${esc(s.status)}</span></td>
-      <td>${s.apply_url ? `<a href="${esc(s.apply_url)}" target="_blank" class="link-icon" title="Manage key">↗</a>` : ''}</td>
+      <td>${s.apply_url ? `<a href="${esc(s.apply_url)}" target="_blank" rel="noopener" class="link-icon" title="Manage key">${SVG.extLink}</a>` : ''}</td>
     </tr>
   `).join('');
 }
@@ -709,9 +1066,9 @@ function esc(s) {
 
 function applyFilters() {
   const q = document.getElementById('search').value.toLowerCase();
-  const prov = document.getElementById('filter-provider').value;
-  const proj = document.getElementById('filter-project').value;
-  const grp = document.getElementById('filter-group').value;
+  const prov = dropdownState.provider;
+  const proj = dropdownState.project;
+  const grp = dropdownState.group;
 
   let filtered = allSecrets;
   if (q) {
@@ -736,14 +1093,9 @@ function populateFilters(secrets) {
   const projects = [...new Set(secrets.flatMap(s => s.projects || []))].sort();
   const groups = [...new Set(secrets.map(s => s.key_group).filter(Boolean))].sort();
 
-  const provSel = document.getElementById('filter-provider');
-  providers.forEach(p => { const o = document.createElement('option'); o.value = p; o.textContent = p; provSel.appendChild(o); });
-
-  const projSel = document.getElementById('filter-project');
-  projects.forEach(p => { const o = document.createElement('option'); o.value = p; o.textContent = p; projSel.appendChild(o); });
-
-  const grpSel = document.getElementById('filter-group');
-  groups.forEach(g => { const o = document.createElement('option'); o.value = g; o.textContent = g; grpSel.appendChild(o); });
+  populateDropdown('dd-provider', providers, 'all_providers');
+  populateDropdown('dd-project', projects, 'all_projects');
+  populateDropdown('dd-group', groups, 'all_groups');
 }
 
 function renderHealthPanels(health) {
@@ -755,12 +1107,12 @@ function renderHealthPanels(health) {
     document.getElementById('expired-list').innerHTML = health.expired.map(s => `
       <div class="panel-item">
         <span class="panel-item-name" style="color:var(--accent-red)">${esc(s.name)}</span>
-        <span class="panel-item-meta">${s.expires_at || ''} ${s.apply_url ? `<a href="${esc(s.apply_url)}" target="_blank" class="link-icon">↗ renew</a>` : ''}</span>
+        <span class="panel-item-meta">${s.expires_at || ''} ${s.apply_url ? `<a href="${esc(s.apply_url)}" target="_blank" rel="noopener" class="link-icon">${SVG.extLink} ${t('renew')}</a>` : ''}</span>
       </div>
     `).join('');
   } else {
     document.getElementById('panel-expired').querySelector('.panel-body').innerHTML =
-      '<div class="panel-empty"><span class="check">✓</span>No expired keys</div>';
+      `<div class="panel-empty">${SVG.checkCircle}<span>${t('no_expired')}</span></div>`;
   }
 
   if (health.expiring_soon?.length) {
@@ -768,12 +1120,12 @@ function renderHealthPanels(health) {
     document.getElementById('expiring-list').innerHTML = health.expiring_soon.map(s => `
       <div class="panel-item">
         <span class="panel-item-name" style="color:var(--accent-yellow)">${esc(s.name)}</span>
-        <span class="panel-item-meta">${s.expires_at || ''} ${s.apply_url ? `<a href="${esc(s.apply_url)}" target="_blank" class="link-icon">↗ renew</a>` : ''}</span>
+        <span class="panel-item-meta">${s.expires_at || ''} ${s.apply_url ? `<a href="${esc(s.apply_url)}" target="_blank" rel="noopener" class="link-icon">${SVG.extLink} ${t('renew')}</a>` : ''}</span>
       </div>
     `).join('');
   } else {
     document.getElementById('panel-expiring').querySelector('.panel-body').innerHTML =
-      '<div class="panel-empty"><span class="check">✓</span>No keys expiring soon</div>';
+      `<div class="panel-empty">${SVG.checkCircle}<span>${t('no_expiring')}</span></div>`;
   }
 }
 
@@ -799,24 +1151,31 @@ async function init() {
     renderHealthPanels(health);
   } catch (e) {
     document.getElementById('secrets-body').innerHTML =
-      `<tr><td colspan="8"><div class="empty-state"><div class="icon">⚠</div><p>Failed to load: ${esc(e.message)}</p></div></td></tr>`;
+      `<tr><td colspan="8"><div class="empty-state">${SVG.alert}<p>${t('load_failed')}: ${esc(e.message)}</p></div></td></tr>`;
   }
 }
 
 // Event listeners
 document.getElementById('search').addEventListener('input', applyFilters);
-document.getElementById('filter-provider').addEventListener('change', applyFilters);
-document.getElementById('filter-project').addEventListener('change', applyFilters);
-document.getElementById('filter-group').addEventListener('change', applyFilters);
 
-// Keyboard shortcut: / to focus search
+document.querySelectorAll('.lang-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    currentLang = btn.dataset.lang;
+    applyI18n();
+    if (healthData) renderHealthPanels(healthData);
+    if (allSecrets.length) populateFilters(allSecrets);
+  });
+});
+
 document.addEventListener('keydown', e => {
   if (e.key === '/' && document.activeElement.tagName !== 'INPUT') {
     e.preventDefault();
     document.getElementById('search').focus();
   }
+  if (e.key === 'Escape') closeAllDropdowns();
 });
 
+applyI18n();
 init();
 </script>
 </body>

@@ -17,7 +17,7 @@ Every developer has experienced this:
 ```
 You                          KeyFlow                        AI Assistant
  │                              │                               │
- │  keyflow add google-key     │                               │
+ │  kf add google-key          │                               │
  │ ──────────────────────────► │                               │
  │                              │  MCP Server (search_keys)    │
  │                              │ ◄──────────────────────────── │
@@ -35,14 +35,17 @@ You                          KeyFlow                        AI Assistant
 ## Quick Start
 
 ```bash
+# Install
+cargo install --path .
+
 # Initialize vault
-keyflow init
+kf init
 
 # Add secrets (interactive)
-keyflow add
+kf add
 
 # Or non-interactive
-keyflow add --name google-oauth \
+kf add --name google-oauth \
   --env-var GOOGLE_CLIENT_ID \
   --value "your-client-id" \
   --provider google \
@@ -51,24 +54,60 @@ keyflow add --name google-oauth \
   --expires "2027-01-15"
 
 # List all secrets
-keyflow list
+kf list
 
 # Search
-keyflow search cloudflare
+kf search cloudflare
 
 # Check health (expired/expiring keys)
-keyflow health
+kf health
 
 # Run command with secrets injected
-keyflow run -- npm start
-keyflow run --project myapp -- python app.py
+kf run -- npm start
+kf run --project myapp -- python app.py
 
 # Export as .env
-keyflow export --project myapp -o .env
+kf export --project myapp -o .env
 
 # Import from .env
-keyflow import .env --provider imported --project myapp
+kf import .env --provider imported --project myapp
 ```
+
+> `kf` is the shorthand for `keyflow`. Both commands are identical.
+
+## Interactive Interfaces
+
+### TUI (Terminal UI)
+
+```bash
+kf ui
+```
+
+Full-featured terminal interface with cyberpunk/HUD aesthetics:
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` / `↑` / `↓` | Navigate rows |
+| `Tab` / `h` / `l` | Switch tabs (Secrets / Health / Groups) |
+| `/` | Search mode (real-time filter) |
+| `Enter` | Toggle detail panel |
+| `y` | Copy secret value to clipboard |
+| `g` / `G` | Jump to first / last row |
+| `r` | Reload data |
+| `q` / `Ctrl+C` | Quit |
+
+### Web Dashboard
+
+```bash
+kf web
+```
+
+Opens a local-only dark-themed web dashboard at `http://127.0.0.1:9876` with:
+- Overview stat cards (Total / Active / Expired / Expiring / Groups)
+- Searchable secrets table with provider badges and status indicators
+- Health panels for expired and expiring keys
+- Filter by provider, project, group
+- i18n support: English, Chinese, Japanese
 
 ## MCP Server (AI Integration)
 
@@ -76,13 +115,13 @@ KeyFlow includes a built-in MCP server that lets AI coding assistants (Claude Co
 
 ### Setup for Claude Code
 
-Add to your Claude Code MCP config (`~/.claude/claude_desktop_config.json` or project `.mcp.json`):
+Add to `~/.claude/.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "keyflow": {
-      "command": "keyflow",
+      "command": "kf",
       "args": ["serve"],
       "env": {
         "KEYFLOW_PASSPHRASE": "your-master-passphrase"
@@ -106,7 +145,7 @@ Add to your Claude Code MCP config (`~/.claude/claude_desktop_config.json` or pr
 }
 ```
 
-### MCP Tools Available
+### MCP Tools
 
 | Tool | Description |
 |------|-------------|
@@ -121,18 +160,40 @@ Add to your Claude Code MCP config (`~/.claude/claude_desktop_config.json` or pr
 
 | Command | Description |
 |---------|-------------|
-| `keyflow init` | Initialize vault with master passphrase |
-| `keyflow add` | Add a secret (interactive or `--flags`) |
-| `keyflow list` | List secrets (`--provider`, `--project`, `--expiring`) |
-| `keyflow get <name>` | Get secret value (`--raw` for plain output) |
-| `keyflow search <query>` | Search across all fields |
-| `keyflow update <name>` | Update value or metadata |
-| `keyflow remove <name>` | Remove a secret |
-| `keyflow run -- <cmd>` | Run with secrets as env vars |
-| `keyflow import <file>` | Import from `.env` file |
-| `keyflow export` | Export as `.env` format |
-| `keyflow health` | Health check report |
-| `keyflow serve` | Start MCP server |
+| `kf init` | Initialize vault with master passphrase |
+| `kf add` | Add a secret (interactive or `--flags`) |
+| `kf list` | List secrets (`--provider`, `--project`, `--group`, `--expiring`, `--inactive`) |
+| `kf get <name>` | Get secret value (`--raw` for plain output) |
+| `kf search <query>` | Search across all fields |
+| `kf update <name>` | Update value or metadata (`--value`, `--group`, `--active`, etc.) |
+| `kf remove <name>` | Remove a secret (`-f` to skip confirmation) |
+| `kf run -- <cmd>` | Run with secrets as env vars (`--project`, `--group`) |
+| `kf import <file>` | Import from `.env` (`--on-conflict overwrite\|skip\|rename`) |
+| `kf export` | Export as `.env` (`--project`, `--group`, `-o file`) |
+| `kf health` | Health check report |
+| `kf group list` | List all key groups |
+| `kf group show <name>` | Show secrets in a group |
+| `kf group export <name>` | Export a group as `.env` |
+| `kf template list` | List predefined templates (14 services) |
+| `kf template use <name>` | Create secrets from a template |
+| `kf passwd` | Change master passphrase |
+| `kf backup` | Backup vault to encrypted file |
+| `kf restore <file>` | Restore vault from backup |
+| `kf serve` | Start MCP server (stdio) |
+| `kf ui` | Launch interactive TUI |
+| `kf web` | Open web dashboard |
+| `kf completions <shell>` | Generate shell completions (zsh/bash/fish) |
+
+## Templates
+
+14 predefined service templates to quickly set up key bundles:
+
+```bash
+kf template list
+kf template use google-oauth --projects myapp --expires 2027-01-15
+```
+
+Available: `google-oauth`, `github-oauth`, `github-token`, `cloudflare-workers`, `cloudflare-r2`, `aws-iam`, `stripe`, `supabase`, `openai`, `anthropic`, `vercel`, `firebase`, `sendgrid`, `docker`
 
 ## Security
 
@@ -140,7 +201,8 @@ Add to your Claude Code MCP config (`~/.claude/claude_desktop_config.json` or pr
 - **Argon2** key derivation from master passphrase
 - Secrets stored locally in `~/.keyflow/` with `0700` permissions
 - MCP server **never exposes actual secret values** to AI — only metadata
-- Runtime injection via `keyflow run` (secrets never written to disk as plaintext)
+- Runtime injection via `kf run` (secrets never written to disk as plaintext)
+- Web dashboard listens on `127.0.0.1` only (not accessible from network)
 
 ## Supported Providers
 
@@ -155,7 +217,10 @@ Auto-suggests management URLs for: Google, GitHub, Cloudflare, AWS, Azure, OpenA
 ## Install
 
 ```bash
+# From source
 cargo install --path .
+
+# This installs both `keyflow` and `kf` binaries
 ```
 
 ## License

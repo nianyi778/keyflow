@@ -5,6 +5,7 @@ mod dashboard;
 mod db;
 mod mcp;
 mod models;
+mod tui;
 
 use anyhow::Result;
 use clap::{CommandFactory, Parser};
@@ -68,15 +69,21 @@ fn main() -> Result<()> {
         Commands::Serve => commands::cmd_serve(),
 
         Commands::Completions { shell } => {
+            let bin_name = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                .unwrap_or_else(|| "keyflow".to_string());
             clap_complete::generate(
                 shell,
                 &mut Cli::command(),
-                "keyflow",
+                &bin_name,
                 &mut std::io::stdout(),
             );
             Ok(())
         }
 
-        Commands::Dashboard { port } => dashboard::cmd_dashboard(port),
+        Commands::Ui => tui::cmd_tui(),
+
+        Commands::Web { port } => dashboard::cmd_dashboard(port),
     }
 }
