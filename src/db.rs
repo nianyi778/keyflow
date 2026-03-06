@@ -1,0 +1,296 @@
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use rusqlite::{params, Connection};
+
+use crate::crypto::Crypto;
+use crate::models::{ListFilter, SecretEntry};
+
+pub struct Database {
+    conn: Connection,
+    crypto: Crypto,
+}
+
+impl Database {
+    pub fn open(db_path: &str, crypto: Crypto) -> Result<Self> {
+        let conn = Connection::open(db_path)?;
+        let db = Self { conn, crypto };
+        db.init_tables()?;
+        Ok(db)
+    }
+
+    fn init_tables(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS secrets (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                env_var TEXT NOT NULL,
+                encrypted_value BLOB NOT NULL,
+                provider TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                scopes TEXT NOT NULL DEFAULT '[]',
+                projects TEXT NOT NULL DEFAULT '[]',
+                apply_url TEXT NOT NULL DEFAULT '',
+                expires_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_used_at TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS idx_secrets_env_var ON secrets(env_var);
+            CREATE INDEX IF NOT EXISTS idx_secrets_provider ON secrets(provider);
+            CREATE INDEX IF NOT EXISTS idx_secrets_name ON secrets(name);",
+        )?;
+        Ok(())
+    }
+
+    pub fn add_secret(&self, entry: &SecretEntry, value: &str) -> Result<()> {
+        let encrypted = self.crypto.encrypt(value.as_bytes())?;
+        let scopes_json = serde_json::to_string(&entry.scopes)?;
+        let projects_json = serde_json::to_string(&entry.projects)?;
+
+        self.conn.execute(
+            "INSERT INTO secrets (id, name, env_var, encrypted_value, provider, description, scopes, projects, apply_url, expires_at, created_at, updated_at, is_active)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                entry.id,
+                entry.name,
+                entry.env_var,
+                encrypted,
+                entry.provider,
+                entry.description,
+                scopes_json,
+                projects_json,
+                entry.apply_url,
+                entry.expires_at.map(|d| d.to_rfc3339()),
+                entry.created_at.to_rfc3339(),
+                entry.updated_at.to_rfc3339(),
+                entry.is_active,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_secrets(&self, filter: &ListFilter) -> Result<Vec<SecretEntry>> {
+        let mut sql = String::from(
+            "SELECT id, name, env_var, provider, description, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, is_active FROM secrets WHERE 1=1",
+        );
+        let mut bind_values: Vec<String> = Vec::new();
+
+        if let Some(ref provider) = filter.provider {
+            bind_values.push(provider.clone());
+            sql.push_str(&format!(" AND provider = ?{}", bind_values.len()));
+        }
+        if let Some(ref project) = filter.project {
+            bind_values.push(format!("%\"{}\"%" , project));
+            sql.push_str(&format!(" AND projects LIKE ?{}", bind_values.len()));
+        }
+        if !filter.inactive {
+            sql.push_str(" AND is_active = 1");
+        }
+
+        sql.push_str(" ORDER BY provider, name");
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::types::ToSql> =
+            bind_values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+        let rows = stmt.query_map(params.as_slice(), |row| {
+            Ok(self.row_to_entry(row))
+        })?;
+
+        let mut entries = Vec::new();
+        for row in rows {
+            let entry = row??;
+            if filter.expiring {
+                match entry.status() {
+                    crate::models::KeyStatus::Expired | crate::models::KeyStatus::ExpiringSoon => {
+                        entries.push(entry);
+                    }
+                    _ => {}
+                }
+            } else {
+                entries.push(entry);
+            }
+        }
+        Ok(entries)
+    }
+
+    pub fn get_secret(&self, name: &str) -> Result<SecretEntry> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, env_var, provider, description, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, is_active FROM secrets WHERE name = ?1",
+        )?;
+        let entry = stmt
+            .query_row(params![name], |row| Ok(self.row_to_entry(row)))
+            .context(format!("Secret '{}' not found", name))??;
+        Ok(entry)
+    }
+
+    pub fn get_secret_value(&self, name: &str) -> Result<String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT encrypted_value FROM secrets WHERE name = ?1")?;
+        let encrypted: Vec<u8> = stmt
+            .query_row(params![name], |row| row.get(0))
+            .context(format!("Secret '{}' not found", name))?;
+
+        // Update last_used_at
+        self.conn.execute(
+            "UPDATE secrets SET last_used_at = ?1 WHERE name = ?2",
+            params![Utc::now().to_rfc3339(), name],
+        )?;
+
+        let decrypted = self.crypto.decrypt(&encrypted)?;
+        String::from_utf8(decrypted).context("Secret value is not valid UTF-8")
+    }
+
+    pub fn remove_secret(&self, name: &str) -> Result<bool> {
+        let affected = self
+            .conn
+            .execute("DELETE FROM secrets WHERE name = ?1", params![name])?;
+        Ok(affected > 0)
+    }
+
+    pub fn update_secret_value(&self, name: &str, new_value: &str) -> Result<()> {
+        let encrypted = self.crypto.encrypt(new_value.as_bytes())?;
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE secrets SET encrypted_value = ?1, updated_at = ?2 WHERE name = ?3",
+            params![encrypted, now, name],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_secret_metadata(
+        &self,
+        name: &str,
+        provider: Option<&str>,
+        description: Option<&str>,
+        scopes: Option<&[String]>,
+        projects: Option<&[String]>,
+        apply_url: Option<&str>,
+        expires_at: Option<Option<DateTime<Utc>>>,
+        is_active: Option<bool>,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let mut updates = vec!["updated_at = ?1".to_string()];
+        let mut bind_idx = 2;
+        let mut bind_values: Vec<String> = vec![now];
+
+        if let Some(p) = provider {
+            bind_values.push(p.to_string());
+            updates.push(format!("provider = ?{}", bind_idx));
+            bind_idx += 1;
+        }
+        if let Some(d) = description {
+            bind_values.push(d.to_string());
+            updates.push(format!("description = ?{}", bind_idx));
+            bind_idx += 1;
+        }
+        if let Some(s) = scopes {
+            bind_values.push(serde_json::to_string(s)?);
+            updates.push(format!("scopes = ?{}", bind_idx));
+            bind_idx += 1;
+        }
+        if let Some(p) = projects {
+            bind_values.push(serde_json::to_string(p)?);
+            updates.push(format!("projects = ?{}", bind_idx));
+            bind_idx += 1;
+        }
+        if let Some(u) = apply_url {
+            bind_values.push(u.to_string());
+            updates.push(format!("apply_url = ?{}", bind_idx));
+            bind_idx += 1;
+        }
+        if let Some(exp) = expires_at {
+            bind_values.push(exp.map(|d| d.to_rfc3339()).unwrap_or_default());
+            updates.push(format!("expires_at = ?{}", bind_idx));
+            bind_idx += 1;
+        }
+        if let Some(a) = is_active {
+            bind_values.push(if a { "1".to_string() } else { "0".to_string() });
+            updates.push(format!("is_active = ?{}", bind_idx));
+            bind_idx += 1;
+        }
+
+        let _ = bind_idx; // suppress unused warning
+        bind_values.push(name.to_string());
+        let sql = format!(
+            "UPDATE secrets SET {} WHERE name = ?{}",
+            updates.join(", "),
+            bind_values.len()
+        );
+
+        let params: Vec<&dyn rusqlite::types::ToSql> =
+            bind_values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+        self.conn.execute(&sql, params.as_slice())?;
+        Ok(())
+    }
+
+    pub fn search_secrets(&self, query: &str) -> Result<Vec<SecretEntry>> {
+        let pattern = format!("%{}%", query);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, env_var, provider, description, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, is_active
+             FROM secrets
+             WHERE name LIKE ?1 OR env_var LIKE ?1 OR provider LIKE ?1 OR description LIKE ?1 OR scopes LIKE ?1 OR projects LIKE ?1
+             ORDER BY name",
+        )?;
+        let rows = stmt.query_map(params![pattern], |row| Ok(self.row_to_entry(row)))?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row??);
+        }
+        Ok(entries)
+    }
+
+    pub fn get_all_for_env(&self, project: Option<&str>) -> Result<Vec<(String, String)>> {
+        let entries = if let Some(proj) = project {
+            self.list_secrets(&ListFilter {
+                project: Some(proj.to_string()),
+                ..Default::default()
+            })?
+        } else {
+            self.list_secrets(&ListFilter::default())?
+        };
+
+        let mut result = Vec::new();
+        for entry in &entries {
+            let value = self.get_secret_value(&entry.name)?;
+            result.push((entry.env_var.clone(), value));
+        }
+        Ok(result)
+    }
+
+    pub fn secret_exists(&self, name: &str) -> Result<bool> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT COUNT(*) FROM secrets WHERE name = ?1")?;
+        let count: i64 = stmt.query_row(params![name], |row| row.get(0))?;
+        Ok(count > 0)
+    }
+
+    fn row_to_entry(&self, row: &rusqlite::Row) -> Result<SecretEntry> {
+        let scopes_str: String = row.get(5)?;
+        let projects_str: String = row.get(6)?;
+        let expires_str: Option<String> = row.get(8)?;
+        let last_used_str: Option<String> = row.get(11)?;
+
+        Ok(SecretEntry {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            env_var: row.get(2)?,
+            provider: row.get(3)?,
+            description: row.get(4)?,
+            scopes: serde_json::from_str(&scopes_str).unwrap_or_default(),
+            projects: serde_json::from_str(&projects_str).unwrap_or_default(),
+            apply_url: row.get(7)?,
+            expires_at: expires_str.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc))),
+            created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(9)?)
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+            updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(10)?)
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+            last_used_at: last_used_str.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc))),
+            is_active: row.get(12)?,
+        })
+    }
+}
