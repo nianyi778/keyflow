@@ -1,12 +1,13 @@
 mod cli;
 mod commands;
 mod crypto;
+mod dashboard;
 mod db;
 mod mcp;
 mod models;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use cli::{Cli, Commands, GroupAction, TemplateAction};
 
 fn main() -> Result<()> {
@@ -65,5 +66,17 @@ fn main() -> Result<()> {
         },
 
         Commands::Serve => commands::cmd_serve(),
+
+        Commands::Completions { shell } => {
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "keyflow",
+                &mut std::io::stdout(),
+            );
+            Ok(())
+        }
+
+        Commands::Dashboard { port } => dashboard::cmd_dashboard(port),
     }
 }

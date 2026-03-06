@@ -2,18 +2,18 @@
 
 > Last updated: 2026-03-06
 
-## P0 — Core (自用必备)
+## P0 — Core (Done)
 
-- [x] ~~修改密码~~ — `keyflow passwd`，重新加密所有数据，不丢失
-- [x] ~~数据备份/恢复~~ — `keyflow backup` / `keyflow restore`
-- [x] ~~import 覆盖策略~~ — `--on-conflict overwrite|skip|rename`
-- [x] ~~Key Group~~ — `key_group` 字段 + `keyflow group list/show/export`
-- [x] ~~模板系统~~ — `keyflow template list/use`，14 个预设模板（Google OAuth, GitHub, CF, AWS, Stripe, Supabase...）
+- [x] 修改密码 — `keyflow passwd`
+- [x] 数据备份/恢复 — `keyflow backup` / `keyflow restore`
+- [x] import 覆盖策略 — `--on-conflict overwrite|skip|rename`
+- [x] Key Group — `key_group` 字段 + `keyflow group list/show/export`
+- [x] 模板系统 — `keyflow template list/use`，14 个预设模板
 
-## P1 — 体验提升
+## P1 — 体验提升 (Done)
 
-- [ ] **Shell 补全** — `keyflow completions zsh/bash/fish`（clap 内置支持）
-- [ ] **本地 Web Dashboard** — `keyflow dashboard` 启动本地 HTTP server，浏览器可视化管理
+- [x] Shell 补全 — `keyflow completions zsh/bash/fish`
+- [x] 本地 Web Dashboard — `keyflow dashboard` 暗色主题可视化管理
 - [ ] **真实 API 健康检查** — reqwest 实际调 API 验证 key 有效性（Google/GitHub/CF）
 - [ ] **过期提醒通知** — cron + macOS 系统通知 / webhook
 - [ ] **自动检测项目** — 进入目录时读 package.json / Cargo.toml 自动关联项目标签
@@ -36,11 +36,5 @@
 
 ## Done
 
-- [x] CLI 全功能 (add/list/get/search/update/remove/import/export/run/health)
-- [x] AES-256-GCM 加密 + Argon2 密钥派生
-- [x] MCP Server (Claude Code / Cursor 集成)
-- [x] 17 个 provider 预设 URL
-- [x] 交互式 + 非交互式双模式
-- [x] GitHub 仓库创建 + 推送
-- [x] MCP 全局配置 (~/.claude/.mcp.json)
-- [x] P0: passwd / backup / restore / import conflict / groups / templates (14 presets)
+- [x] v0.1.0: CLI 全功能 + AES-256-GCM + MCP Server + 17 providers
+- [x] v0.2.0: P0 (passwd/backup/restore/groups/templates) + P1 (completions/dashboard)

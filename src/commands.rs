@@ -48,7 +48,7 @@ pub fn get_passphrase() -> Result<String> {
     Ok(pass)
 }
 
-fn load_config() -> Result<(std::path::PathBuf, AppConfig, Vec<u8>)> {
+pub fn load_config() -> Result<(std::path::PathBuf, AppConfig, Vec<u8>)> {
     let data_dir = get_data_dir()?;
     let config_path = data_dir.join("config.json");
 

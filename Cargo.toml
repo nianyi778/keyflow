@@ -1,12 +1,13 @@
 [package]
 name = "keyflow"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "AI-Native Secret Manager - Let AI coding assistants discover and use your API keys"
 license = "MIT"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 aes-gcm = "0.10"
 argon2 = "0.5"
@@ -21,6 +22,7 @@ comfy-table = "7"
 base64 = "0.22"
 dirs = "5"
 anyhow = "1"
+tiny_http = "0.12"
 
 [profile.release]
 opt-level = "z"

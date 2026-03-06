@@ -214,6 +214,20 @@ pub enum Commands {
 
     /// Start MCP server (for AI coding assistants)
     Serve,
+
+    /// Generate shell completions
+    Completions {
+        /// Shell type
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+
+    /// Start local web dashboard
+    Dashboard {
+        /// Port to listen on
+        #[arg(long, default_value = "9876")]
+        port: u16,
+    },
 }
 
 #[derive(Subcommand)]
