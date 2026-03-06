@@ -12,7 +12,14 @@ use clap::{CommandFactory, Parser};
 use cli::{Cli, Commands, GroupAction, TemplateAction};
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    // `kf` with no args → launch TUI
+    let cli = match Cli::try_parse() {
+        Ok(c) => c,
+        Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+            return tui::cmd_tui();
+        }
+        Err(e) => e.exit(),
+    };
 
     match cli.command {
         Commands::Init { passphrase } => commands::cmd_init(passphrase),
@@ -24,24 +31,23 @@ fn main() -> Result<()> {
         Commands::Restore { file, passphrase } => commands::cmd_restore(&file, passphrase),
 
         Commands::Add {
-            name, env_var, value, provider, desc,
-            scopes, projects, url, expires, group,
-        } => commands::cmd_add(name, env_var, value, provider, desc, scopes, projects, url, expires, group),
+            env_var, value, provider, projects, group, desc, expires, paste,
+        } => commands::cmd_add(env_var, value, provider, projects, group, desc, expires, paste),
 
         Commands::List {
             provider, project, group, expiring, inactive,
         } => commands::cmd_list(provider, project, group, expiring, inactive),
 
-        Commands::Get { name, raw } => commands::cmd_get(&name, raw),
+        Commands::Get { name, raw, copy } => commands::cmd_get(name, raw, copy),
 
-        Commands::Remove { name, force } => commands::cmd_remove(&name, force),
+        Commands::Remove { name, force } => commands::cmd_remove(name, force),
 
         Commands::Update {
             name, value, provider, desc,
             scopes, projects, url, expires, active, group,
-        } => commands::cmd_update(&name, value, provider, desc, scopes, projects, url, expires, active, group),
+        } => commands::cmd_update(name, value, provider, desc, scopes, projects, url, expires, active, group),
 
-        Commands::Run { project, group, command } => commands::cmd_run(project, group, command),
+        Commands::Run { project, group, all, command } => commands::cmd_run(project, group, all, command),
 
         Commands::Import {
             file, provider, project, on_conflict,
@@ -51,7 +57,7 @@ fn main() -> Result<()> {
 
         Commands::Health => commands::cmd_health(),
 
-        Commands::Search { query } => commands::cmd_search(&query),
+        Commands::Search { query } => commands::cmd_search(query),
 
         Commands::Group { action } => match action {
             GroupAction::List => commands::cmd_group_list(),
@@ -65,6 +71,8 @@ fn main() -> Result<()> {
                 commands::cmd_template_use(&name, projects, expires, prefix)
             }
         },
+
+        Commands::Lock => commands::cmd_lock(),
 
         Commands::Serve => commands::cmd_serve(),
 

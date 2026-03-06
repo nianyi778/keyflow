@@ -46,38 +46,30 @@ pub enum Commands {
         passphrase: Option<String>,
     },
 
-    /// Add a new secret (interactive)
+    /// Add a secret: `kf add MY_KEY "value"` or `kf add` for interactive
     Add {
-        /// Non-interactive mode: secret name
-        #[arg(long)]
-        name: Option<String>,
-        /// Non-interactive: environment variable name
-        #[arg(long)]
+        /// Environment variable name (e.g. GOOGLE_CLIENT_ID)
         env_var: Option<String>,
-        /// Non-interactive: secret value
-        #[arg(long)]
+        /// Secret value (use "-" to read from stdin, omit for interactive prompt)
         value: Option<String>,
-        /// Provider (e.g., google, github, cloudflare)
-        #[arg(long)]
+        /// Provider (auto-detected from env var name if omitted)
+        #[arg(short, long)]
         provider: Option<String>,
-        /// Description
-        #[arg(long)]
-        desc: Option<String>,
-        /// Comma-separated scopes
-        #[arg(long)]
-        scopes: Option<String>,
-        /// Comma-separated project tags
-        #[arg(long)]
+        /// Project tags (comma-separated)
+        #[arg(short = 'P', long)]
         projects: Option<String>,
-        /// URL to manage/renew the key
-        #[arg(long)]
-        url: Option<String>,
-        /// Expiry date (YYYY-MM-DD)
-        #[arg(long)]
-        expires: Option<String>,
-        /// Key group name (bundle related keys)
-        #[arg(long)]
+        /// Key group name
+        #[arg(short, long)]
         group: Option<String>,
+        /// Description
+        #[arg(short, long)]
+        desc: Option<String>,
+        /// Expiry date (YYYY-MM-DD)
+        #[arg(short, long)]
+        expires: Option<String>,
+        /// Read value from clipboard (macOS: pbpaste)
+        #[arg(long)]
+        paste: bool,
     },
 
     /// List all secrets
@@ -99,28 +91,31 @@ pub enum Commands {
         inactive: bool,
     },
 
-    /// Get a secret value by name
+    /// Get a secret value: `kf get` to select, or `kf get <name>`
     Get {
-        /// Secret name
-        name: String,
+        /// Secret name (omit to select interactively)
+        name: Option<String>,
         /// Output only the value (no decoration)
         #[arg(long)]
         raw: bool,
+        /// Copy value to clipboard
+        #[arg(short, long)]
+        copy: bool,
     },
 
-    /// Remove a secret
+    /// Remove a secret: `kf remove` to select, or `kf remove <name>`
     Remove {
-        /// Secret name
-        name: String,
+        /// Secret name (omit to select interactively)
+        name: Option<String>,
         /// Skip confirmation
         #[arg(long, short)]
         force: bool,
     },
 
-    /// Update a secret's value or metadata
+    /// Update a secret: `kf update` to select, or `kf update <name>`
     Update {
-        /// Secret name
-        name: String,
+        /// Secret name (omit to select interactively)
+        name: Option<String>,
         /// New value
         #[arg(long)]
         value: Option<String>,
@@ -150,14 +145,17 @@ pub enum Commands {
         group: Option<String>,
     },
 
-    /// Run a command with secrets injected as environment variables
+    /// Run a command with secrets injected: `kf run -- npm start`
     Run {
-        /// Only inject secrets tagged with this project
-        #[arg(long)]
+        /// Project filter (auto-detected from package.json/Cargo.toml if omitted)
+        #[arg(short, long)]
         project: Option<String>,
-        /// Only inject secrets from this group
-        #[arg(long)]
+        /// Group filter
+        #[arg(short, long)]
         group: Option<String>,
+        /// Inject all secrets (skip project auto-detection)
+        #[arg(short, long)]
+        all: bool,
         /// The command and arguments to run
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
@@ -194,10 +192,10 @@ pub enum Commands {
     /// Check health status of all secrets
     Health,
 
-    /// Search secrets by keyword
+    /// Search secrets by keyword: `kf search` to type interactively
     Search {
-        /// Search query
-        query: String,
+        /// Search query (omit for interactive prompt)
+        query: Option<String>,
     },
 
     /// Manage key groups (bundles of related secrets)
@@ -211,6 +209,9 @@ pub enum Commands {
         #[command(subcommand)]
         action: TemplateAction,
     },
+
+    /// Clear passphrase session (require re-auth on next command)
+    Lock,
 
     /// Start MCP server (for AI coding assistants)
     Serve,

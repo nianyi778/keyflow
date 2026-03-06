@@ -38,13 +38,53 @@ pub fn get_data_dir() -> Result<std::path::PathBuf> {
     Ok(dir)
 }
 
+fn session_path() -> Result<std::path::PathBuf> {
+    Ok(get_data_dir()?.join(".session"))
+}
+
+/// Try to read cached passphrase from session file
+fn read_session() -> Option<String> {
+    let path = session_path().ok()?;
+    fs::read_to_string(&path).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// Save passphrase to session file
+fn save_session(passphrase: &str) -> Result<()> {
+    let path = session_path()?;
+    fs::write(&path, passphrase)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+/// Clear session (lock)
+pub fn cmd_lock() -> Result<()> {
+    let path = session_path()?;
+    if path.exists() {
+        fs::remove_file(&path)?;
+    }
+    println!("{} Session cleared.", style("✓").green().bold());
+    Ok(())
+}
+
 pub fn get_passphrase() -> Result<String> {
+    // 1. Env var (highest priority, e.g. for MCP serve)
     if let Ok(pass) = std::env::var("KEYFLOW_PASSPHRASE") {
         return Ok(pass);
     }
+    // 2. Session cache
+    if let Some(pass) = read_session() {
+        return Ok(pass);
+    }
+    // 3. Interactive prompt
     let pass = Password::new()
         .with_prompt("KeyFlow passphrase")
         .interact()?;
+    // Cache for future commands
+    let _ = save_session(&pass);
     Ok(pass)
 }
 
@@ -75,6 +115,23 @@ pub fn open_db() -> Result<Database> {
     let crypto = Crypto::new(&passphrase, &salt)?;
     let db_path = data_dir.join("keyflow.db");
     Database::open(db_path.to_str().unwrap(), crypto)
+}
+
+/// Interactive secret selector — used by get/remove/update when name is omitted
+fn select_secret(db: &Database) -> Result<String> {
+    let entries = db.list_secrets(&ListFilter::default())?;
+    if entries.is_empty() {
+        bail!("No secrets found. Add one with: kf add");
+    }
+    let items: Vec<String> = entries.iter()
+        .map(|e| format!("{:<28} {:<24} {}", e.name, e.env_var, e.provider))
+        .collect();
+    let idx = Select::new()
+        .with_prompt("Select secret")
+        .items(&items)
+        .default(0)
+        .interact()?;
+    Ok(entries[idx].name.clone())
 }
 
 // === INIT ===
@@ -365,130 +422,171 @@ pub fn cmd_restore(file: &str, passphrase_arg: Option<String>) -> Result<()> {
 
 // === ADD ===
 
+/// Infer provider from env var name (e.g. GOOGLE_CLIENT_ID → google)
+fn infer_provider(env_var: &str) -> Option<&'static str> {
+    let upper = env_var.to_uppercase();
+    let patterns: &[(&[&str], &str)] = &[
+        (&["GOOGLE", "GCLOUD", "GCP", "FIREBASE"], "google"),
+        (&["GITHUB", "GH_"], "github"),
+        (&["CLOUDFLARE", "CF_"], "cloudflare"),
+        (&["AWS_", "AMAZON"], "aws"),
+        (&["AZURE_"], "azure"),
+        (&["OPENAI"], "openai"),
+        (&["ANTHROPIC", "CLAUDE"], "anthropic"),
+        (&["STRIPE"], "stripe"),
+        (&["VERCEL"], "vercel"),
+        (&["SUPABASE"], "supabase"),
+        (&["TWILIO"], "twilio"),
+        (&["SENDGRID"], "sendgrid"),
+        (&["SLACK"], "slack"),
+        (&["DOCKER"], "docker"),
+        (&["NPM_"], "npm"),
+    ];
+    for (keywords, provider) in patterns {
+        for kw in *keywords {
+            if upper.contains(kw) {
+                return Some(provider);
+            }
+        }
+    }
+    None
+}
+
+/// Detect current project name from package.json / Cargo.toml in cwd
+fn detect_project_name() -> Option<String> {
+    // Try package.json
+    if let Ok(content) = std::fs::read_to_string("package.json") {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(name) = v.get("name").and_then(|n| n.as_str()) {
+                return Some(name.to_string());
+            }
+        }
+    }
+    // Try Cargo.toml (simple parse)
+    if let Ok(content) = std::fs::read_to_string("Cargo.toml") {
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("name") {
+                if let Some(val) = trimmed.split('=').nth(1) {
+                    let name = val.trim().trim_matches('"').trim_matches('\'');
+                    if !name.is_empty() {
+                        return Some(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn cmd_add(
-    name: Option<String>,
     env_var: Option<String>,
     value: Option<String>,
     provider: Option<String>,
-    desc: Option<String>,
-    scopes: Option<String>,
     projects: Option<String>,
-    url: Option<String>,
-    expires: Option<String>,
     group: Option<String>,
+    desc: Option<String>,
+    expires: Option<String>,
+    paste: bool,
 ) -> Result<()> {
     let db = open_db()?;
-
-    let non_interactive = name.is_some() && value.is_some();
-
-    let name = match name {
-        Some(n) => n,
-        None => Input::new()
-            .with_prompt("Secret name (human-readable)")
-            .interact_text()?,
-    };
-
-    if db.secret_exists(&name)? {
-        bail!("Secret '{}' already exists. Use 'keyflow update' to modify.", name);
-    }
-
-    let env_var = match env_var {
-        Some(e) => e,
-        None if non_interactive => name.to_uppercase().replace(['-', ' ', '.'], "_"),
-        None => {
-            let suggested = name.to_uppercase().replace(['-', ' ', '.'], "_");
-            Input::new()
-                .with_prompt("Environment variable name")
-                .default(suggested)
-                .interact_text()?
-        }
-    };
-
-    let secret_value = match value {
-        Some(v) => v,
-        None => Password::new()
-            .with_prompt("Secret value")
-            .interact()?,
-    };
-
-    let provider = match provider {
-        Some(p) => p,
-        None if non_interactive => "other".to_string(),
-        None => {
-            let idx = Select::new()
-                .with_prompt("Provider")
-                .items(PROVIDERS)
-                .default(0)
-                .interact()?;
-            PROVIDERS[idx].to_string()
-        }
-    };
-
-    let description = match desc {
-        Some(d) => d,
-        None if non_interactive => String::new(),
-        None => Input::new()
-            .with_prompt("Description (what is this key for?)")
-            .default(String::new())
-            .interact_text()?,
-    };
 
     let parse_csv = |s: String| -> Vec<String> {
         s.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
     };
 
-    let scopes_vec: Vec<String> = match scopes {
-        Some(s) => parse_csv(s),
-        None if non_interactive => vec![],
+    // --- Step 1: Get env var name ---
+    let env_var = match env_var {
+        Some(e) => e,
+        None => Input::new()
+            .with_prompt("Env var name (e.g. GOOGLE_CLIENT_ID)")
+            .interact_text()?,
+    };
+
+    // Use env_var as the secret name (lowercase, hyphenated)
+    let name = env_var.to_lowercase().replace('_', "-");
+
+    if db.secret_exists(&name)? {
+        bail!("Secret '{}' already exists. Use 'kf update {}' to modify.", name, name);
+    }
+
+    // --- Step 2: Get value (positional / stdin / paste / prompt) ---
+    let secret_value = if paste {
+        // Read from clipboard
+        let output = std::process::Command::new("pbpaste").output()
+            .context("Failed to read clipboard (pbpaste). Are you on macOS?")?;
+        let val = String::from_utf8(output.stdout)?.trim().to_string();
+        if val.is_empty() {
+            bail!("Clipboard is empty");
+        }
+        val
+    } else if let Some(v) = value {
+        if v == "-" {
+            // Read from stdin
+            use std::io::Read;
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            buf.trim().to_string()
+        } else {
+            v
+        }
+    } else if !atty::is(atty::Stream::Stdin) {
+        // Piped input: echo "val" | kf add MY_KEY
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)?;
+        buf.trim().to_string()
+    } else {
+        Password::new()
+            .with_prompt("Secret value")
+            .interact()?
+    };
+
+    if secret_value.is_empty() {
+        bail!("Secret value cannot be empty");
+    }
+
+    // --- Step 3: Auto-detect provider ---
+    let provider = match provider {
+        Some(p) => p,
         None => {
-            let s: String = Input::new()
-                .with_prompt("Scopes/permissions (comma-separated, optional)")
-                .default(String::new())
-                .interact_text()?;
-            parse_csv(s)
+            if let Some(inferred) = infer_provider(&env_var) {
+                println!("  {} provider: {}", style("▸").dim(), style(inferred).cyan());
+                inferred.to_string()
+            } else {
+                let idx = Select::new()
+                    .with_prompt("Provider")
+                    .items(PROVIDERS)
+                    .default(PROVIDERS.len() - 1) // default to "other"
+                    .interact()?;
+                PROVIDERS[idx].to_string()
+            }
         }
     };
 
+    // --- Step 4: Project tags (auto-detect from cwd if not given) ---
     let projects_vec: Vec<String> = match projects {
         Some(p) => parse_csv(p),
-        None if non_interactive => vec![],
         None => {
+            let detected = detect_project_name().unwrap_or_default();
+            if !detected.is_empty() {
+                println!("  {} project: {} (from current dir)", style("▸").dim(), style(&detected).cyan());
+            }
             let p: String = Input::new()
-                .with_prompt("Project tags (comma-separated, optional)")
-                .default(String::new())
+                .with_prompt("Project tags (comma-separated)")
+                .default(detected)
                 .interact_text()?;
             parse_csv(p)
         }
     };
 
-    let apply_url = match url {
-        Some(u) => u,
-        None if non_interactive => get_default_url(&provider),
-        None => Input::new()
-            .with_prompt("Management URL (where to renew/manage)")
-            .default(get_default_url(&provider))
-            .interact_text()?,
-    };
-
+    // --- Auto-fill the rest ---
+    let description = desc.unwrap_or_default();
+    let key_group = group.unwrap_or_default();
+    let apply_url = get_default_url(&provider);
     let expires_at = match expires {
         Some(e) => parse_date(&e)?,
-        None if non_interactive => None,
-        None => {
-            let e: String = Input::new()
-                .with_prompt("Expiry date (YYYY-MM-DD, empty for none)")
-                .default(String::new())
-                .interact_text()?;
-            if e.is_empty() { None } else { parse_date(&e)? }
-        }
-    };
-
-    let key_group = match group {
-        Some(g) => g,
-        None if non_interactive => String::new(),
-        None => Input::new()
-            .with_prompt("Key group (bundle name, optional)")
-            .default(String::new())
-            .interact_text()?,
+        None => None,
     };
 
     let now = Utc::now();
@@ -498,7 +596,7 @@ pub fn cmd_add(
         env_var,
         provider,
         description,
-        scopes: scopes_vec,
+        scopes: vec![],
         projects: projects_vec,
         apply_url,
         expires_at,
@@ -589,14 +687,27 @@ pub fn cmd_list(provider: Option<String>, project: Option<String>, group: Option
 
 // === GET ===
 
-pub fn cmd_get(name: &str, raw: bool) -> Result<()> {
+pub fn cmd_get(name: Option<String>, raw: bool, copy: bool) -> Result<()> {
     let db = open_db()?;
-    let value = db.get_secret_value(name)?;
+    let name = match name {
+        Some(n) => n,
+        None => select_secret(&db)?,
+    };
+    let value = db.get_secret_value(&name)?;
 
-    if raw {
+    if copy {
+        let mut child = std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .context("Failed to copy (pbcopy). Are you on macOS?")?;
+        use std::io::Write;
+        child.stdin.take().unwrap().write_all(value.as_bytes())?;
+        child.wait()?;
+        println!("{} Copied to clipboard.", style("✓").green().bold());
+    } else if raw {
         print!("{}", value);
     } else {
-        let entry = db.get_secret(name)?;
+        let entry = db.get_secret(&name)?;
         println!(
             "{}: {} = {}",
             style(&entry.name).cyan(),
@@ -610,12 +721,17 @@ pub fn cmd_get(name: &str, raw: bool) -> Result<()> {
 
 // === REMOVE ===
 
-pub fn cmd_remove(name: &str, force: bool) -> Result<()> {
+pub fn cmd_remove(name: Option<String>, force: bool) -> Result<()> {
     let db = open_db()?;
-
-    if !db.secret_exists(name)? {
-        bail!("Secret '{}' not found", name);
-    }
+    let name = match name {
+        Some(n) => {
+            if !db.secret_exists(&n)? {
+                bail!("Secret '{}' not found", n);
+            }
+            n
+        }
+        None => select_secret(&db)?,
+    };
 
     if !force {
         let confirmed = Confirm::new()
@@ -628,7 +744,7 @@ pub fn cmd_remove(name: &str, force: bool) -> Result<()> {
         }
     }
 
-    db.remove_secret(name)?;
+    db.remove_secret(&name)?;
     println!(
         "{} Secret '{}' removed",
         style("✓").green().bold(),
@@ -641,7 +757,7 @@ pub fn cmd_remove(name: &str, force: bool) -> Result<()> {
 // === UPDATE ===
 
 pub fn cmd_update(
-    name: &str,
+    name: Option<String>,
     value: Option<String>,
     provider: Option<String>,
     desc: Option<String>,
@@ -653,13 +769,18 @@ pub fn cmd_update(
     group: Option<String>,
 ) -> Result<()> {
     let db = open_db()?;
-
-    if !db.secret_exists(name)? {
-        bail!("Secret '{}' not found", name);
-    }
+    let name = match name {
+        Some(n) => {
+            if !db.secret_exists(&n)? {
+                bail!("Secret '{}' not found", n);
+            }
+            n
+        }
+        None => select_secret(&db)?,
+    };
 
     if let Some(v) = value {
-        db.update_secret_value(name, &v)?;
+        db.update_secret_value(&name, &v)?;
         println!(
             "{} Secret value updated for '{}'",
             style("✓").green().bold(),
@@ -680,7 +801,7 @@ pub fn cmd_update(
     };
 
     db.update_secret_metadata(
-        name,
+        &name,
         provider.as_deref(),
         desc.as_deref(),
         scopes_vec.as_deref(),
@@ -701,12 +822,27 @@ pub fn cmd_update(
 
 // === RUN ===
 
-pub fn cmd_run(project: Option<String>, group: Option<String>, command: Vec<String>) -> Result<()> {
+pub fn cmd_run(project: Option<String>, group: Option<String>, all: bool, command: Vec<String>) -> Result<()> {
     if command.is_empty() {
         bail!("No command specified");
     }
 
     let db = open_db()?;
+
+    // Auto-detect project from cwd unless --all or explicit --project
+    let project = if all {
+        None
+    } else {
+        project.or_else(|| {
+            let detected = detect_project_name();
+            if let Some(ref name) = detected {
+                eprintln!("  {} injecting secrets for project: {} (auto-detected)", style("▸").dim(), style(name).cyan());
+                eprintln!("  {} use --all to inject all secrets", style("ℹ").blue());
+            }
+            detected
+        })
+    };
+
     let env_pairs = db.get_all_for_env(project.as_deref(), group.as_deref())?;
 
     let mut cmd = std::process::Command::new(&command[0]);
@@ -990,19 +1126,25 @@ pub fn cmd_health() -> Result<()> {
 
 // === SEARCH ===
 
-pub fn cmd_search(query: &str) -> Result<()> {
+pub fn cmd_search(query: Option<String>) -> Result<()> {
+    let query = match query {
+        Some(q) => q,
+        None => Input::new()
+            .with_prompt("Search")
+            .interact_text()?,
+    };
     let db = open_db()?;
-    let entries = db.search_secrets(query)?;
+    let entries = db.search_secrets(&query)?;
 
     if entries.is_empty() {
-        println!("No secrets matching '{}' found.", style(query).yellow());
+        println!("No secrets matching '{}' found.", style(&query).yellow());
         return Ok(());
     }
 
     println!(
         "Found {} secrets matching '{}':\n",
         entries.len(),
-        style(query).yellow()
+        style(&query).yellow()
     );
 
     for entry in &entries {
