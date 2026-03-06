@@ -76,6 +76,8 @@ fn main() -> Result<()> {
 
         Commands::Serve => commands::cmd_serve(),
 
+        Commands::Setup { tool, all, list } => commands::cmd_setup(tool, all, list),
+
         Commands::Completions { shell } => {
             let bin_name = std::env::current_exe()
                 .ok()

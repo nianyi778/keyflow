@@ -1,6 +1,6 @@
 [package]
 name = "keyflow"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "AI-Native Secret Manager - Let AI coding assistants discover and use your API keys"
 license = "MIT"

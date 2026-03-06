@@ -216,6 +216,18 @@ pub enum Commands {
     /// Start MCP server (for AI coding assistants)
     Serve,
 
+    /// Configure MCP integration for AI coding tools (Claude, Cursor, Windsurf, etc.)
+    Setup {
+        /// Target tool name (e.g., claude, cursor, windsurf, gemini, opencode, codex, zed, cline, roo)
+        tool: Option<String>,
+        /// Configure all detected tools at once
+        #[arg(long)]
+        all: bool,
+        /// List all supported tools and their status
+        #[arg(long)]
+        list: bool,
+    },
+
     /// Generate shell completions
     Completions {
         /// Shell type

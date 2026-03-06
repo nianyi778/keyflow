@@ -111,14 +111,8 @@ kf init
 # Add secrets (interactive)
 kf add
 
-# Or non-interactive
-kf add --name google-oauth \
-  --env-var GOOGLE_CLIENT_ID \
-  --value "your-client-id" \
-  --provider google \
-  --desc "OAuth for web login" \
-  --projects "myapp,webapp" \
-  --expires "2027-01-15"
+# Connect your AI tools (Claude, Cursor, Windsurf, etc.)
+kf setup
 
 # List all secrets
 kf list
@@ -176,11 +170,20 @@ Opens a local-only dark-themed web dashboard at `http://127.0.0.1:9876` with:
 
 ## MCP Server (AI Integration)
 
-KeyFlow includes a built-in MCP server that lets AI coding assistants (Claude Code, Cursor, Windsurf, etc.) discover your secrets **without ever seeing the actual values**.
+KeyFlow includes a built-in MCP server that lets AI coding assistants (Claude Code, Cursor, Windsurf, etc.) discover your secrets **without ever seeing the actual values** — and deploy them to cloud services securely.
 
-### Setup for Claude Code
+### Quick Setup (Recommended)
 
-Add to `~/.claude/.mcp.json`:
+```bash
+kf setup          # Auto-detect & configure all installed AI tools
+kf setup --list   # See supported tools and their status
+```
+
+Supports: **Claude Code**, **Cursor**, **Windsurf**, **Gemini CLI**, **OpenCode**, **Codex**, **Zed**, **Cline**, **Roo Code**
+
+### Manual Setup
+
+If you prefer manual configuration, add to your AI tool's MCP config:
 
 ```json
 {
@@ -212,6 +215,8 @@ Add to `~/.claude/.mcp.json`:
 
 ### MCP Tools
 
+**Read** — AI discovers your secrets (metadata only, never actual values):
+
 | Tool | Description |
 |------|-------------|
 | `search_keys` | Search secrets by keyword |
@@ -220,6 +225,16 @@ Add to `~/.claude/.mcp.json`:
 | `list_projects` | List all project tags |
 | `check_health` | Check for expired/expiring keys |
 | `list_keys_for_project` | List secrets for a project |
+
+**Action** — AI operates on your secrets (values never pass through AI):
+
+| Tool | Description |
+|------|-------------|
+| `deploy_secret` | Deploy a secret to a cloud service (Cloudflare Workers, Vercel, Fly.io, Heroku, Netlify, Railway). Value goes directly from vault → service CLI. |
+| `deploy_project_secrets` | Deploy ALL secrets for a project to a cloud service at once |
+| `add_key` | Add a new secret to the vault (AI stores it, then forgets the value) |
+| `get_env_snippet` | Generate `.env` file content for a project (with optional value masking) |
+| `check_project_readiness` | Check if a project has all required secrets ready |
 
 ## Commands
 
@@ -245,6 +260,7 @@ Add to `~/.claude/.mcp.json`:
 | `kf backup` | Backup vault to encrypted file |
 | `kf restore <file>` | Restore vault from backup |
 | `kf serve` | Start MCP server (stdio) |
+| `kf setup` | Auto-configure MCP for AI tools (Claude, Cursor, Windsurf, Gemini, Codex, etc.) |
 | `kf ui` | Launch interactive TUI |
 | `kf web` | Open web dashboard |
 | `kf completions <shell>` | Generate shell completions (zsh/bash/fish) |

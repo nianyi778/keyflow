@@ -10,21 +10,26 @@
 - [x] Key Group — `key_group` 字段 + `keyflow group list/show/export`
 - [x] 模板系统 — `keyflow template list/use`，14 个预设模板
 
-## P1 — 体验提升 (Done)
+## P0.5 — AI-Native (Done)
+
+- [x] MCP Action Tools — `deploy_secret`、`deploy_project_secrets`、`add_key`、`get_env_snippet`、`check_project_readiness`
+- [x] `kf setup` — 一键配置 9 种 AI 工具（Claude/Cursor/Windsurf/Gemini/OpenCode/Codex/Zed/Cline/Roo）
+- [x] Deploy 安全修复 — 所有目标通过 stdin pipe 或环境变量传值，不暴露在 `ps`
+
+## P1 — 体验提升
 
 - [x] Shell 补全 — `keyflow completions zsh/bash/fish`
 - [x] 本地 Web Dashboard — `keyflow dashboard` 暗色主题可视化管理
+- [x] Onboarding 闭环 — `kf init` 完成后引导 `kf add` → `kf setup`
 - [ ] **真实 API 健康检查** — reqwest 实际调 API 验证 key 有效性（Google/GitHub/CF）
 - [ ] **过期提醒通知** — cron + macOS 系统通知 / webhook
-- [ ] **自动检测项目** — 进入目录时读 package.json / Cargo.toml 自动关联项目标签
 
 ## P2 — 产品化
 
-- [ ] **Homebrew 发布** — `brew install keyflow`
 - [ ] **GitHub Actions CI** — 自动构建 macOS/Linux/Windows 二进制，Release 发布
+- [ ] **Homebrew 发布** — `brew install keyflow`
 - [ ] **多设备同步** — 加密导出后同步到 iCloud/Dropbox/Git
 - [ ] **1Password/Bitwarden 导入** — 从密码管理器批量迁入
-- [ ] **VS Code 扩展** — 编辑器侧边栏查看/搜索 key
 
 ## P3 — 团队 & 商业化
 
@@ -38,3 +43,4 @@
 
 - [x] v0.1.0: CLI 全功能 + AES-256-GCM + MCP Server + 17 providers
 - [x] v0.2.0: P0 (passwd/backup/restore/groups/templates) + P1 (completions/dashboard)
+- [x] v0.3.0: AI-Native (5 MCP action tools + kf setup + deploy security fix + onboarding)
