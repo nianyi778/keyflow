@@ -5,7 +5,7 @@ use dialoguer::{Confirm, Password};
 use std::fs;
 use std::path::Path;
 
-use crate::commands::auth::{get_data_dir, get_passphrase, load_config, open_db};
+use crate::commands::auth::{get_data_dir, get_passphrase, load_config, open_db, save_session};
 use crate::commands::helpers::{decrypt_backup_contents, BackupFile, BACKUP_FORMAT_VERSION};
 use crate::crypto::Crypto;
 use crate::db::Database;
@@ -44,6 +44,8 @@ pub fn cmd_init(passphrase_arg: Option<String>) -> Result<()> {
     if passphrase.len() < 6 {
         bail!("Passphrase must be at least 6 characters");
     }
+
+    let _ = save_session(&passphrase);
 
     let salt = Crypto::generate_salt();
     let salt_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &salt);
@@ -120,6 +122,8 @@ pub fn cmd_passwd(old_arg: Option<String>, new_arg: Option<String>) -> Result<()
     if new_pass.len() < 6 {
         bail!("Passphrase must be at least 6 characters");
     }
+
+    let _ = save_session(&new_pass);
 
     let new_salt = Crypto::generate_salt();
     let new_crypto = Crypto::new(&new_pass, &new_salt)?;
@@ -262,7 +266,9 @@ pub fn cmd_restore(file: &str, passphrase_arg: Option<String>) -> Result<()> {
                 name: name.to_string(),
                 env_var: name.to_uppercase().replace(['-', ' ', '.'], "_"),
                 provider: String::new(),
+                account_name: String::new(),
                 description: "Restored from backup".to_string(),
+                source: "restore".to_string(),
                 scopes: vec![],
                 projects: vec![],
                 apply_url: String::new(),
@@ -270,6 +276,7 @@ pub fn cmd_restore(file: &str, passphrase_arg: Option<String>) -> Result<()> {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 last_used_at: None,
+                last_verified_at: Some(Utc::now()),
                 is_active: true,
                 key_group: String::new(),
             });

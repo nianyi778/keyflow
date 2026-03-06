@@ -26,7 +26,7 @@ pub(crate) fn read_session() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn save_session(passphrase: &str) -> Result<()> {
+pub(crate) fn save_session(passphrase: &str) -> Result<()> {
     let path = session_path()?;
     fs::write(&path, passphrase)?;
     #[cfg(unix)]

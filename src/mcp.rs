@@ -153,7 +153,7 @@ fn handle_tools_list() -> Result<Value> {
             },
             {
                 "name": "check_health",
-                "description": "Check health status of all secrets. Returns expired, expiring soon, and unused keys.",
+                "description": "Check health status of all secrets. Returns expired, expiring soon, unused, inactive, and metadata review items.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {}
@@ -355,7 +355,13 @@ fn secret_to_metadata(entry: &crate::models::SecretEntry) -> Value {
         "name": entry.name,
         "env_var": entry.env_var,
         "provider": entry.provider,
+        "account_name": entry.account_name,
         "description": entry.description,
+        "source": entry.source,
+        "last_verified_at": entry
+            .last_verified_at
+            .map(|d| d.format("%Y-%m-%d").to_string()),
+        "metadata_gaps": entry.metadata_gaps(),
         "scopes": entry.scopes,
         "projects": entry.projects,
         "key_group": entry.key_group,
@@ -368,12 +374,13 @@ fn secret_to_metadata(entry: &crate::models::SecretEntry) -> Value {
 }
 
 fn get_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
-    args.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty())
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
 }
 
 fn require_str<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
-    get_str(args, key)
-        .ok_or_else(|| anyhow::anyhow!("Missing required argument: '{}'", key))
+    get_str(args, key).ok_or_else(|| anyhow::anyhow!("Missing required argument: '{}'", key))
 }
 
 // ─── Read Tools ───
@@ -414,7 +421,10 @@ fn tool_list_projects(db: &Database) -> Result<Value> {
         std::collections::HashMap::new();
     for entry in &entries {
         for proj in &entry.projects {
-            projects.entry(proj.clone()).or_default().push(entry.name.clone());
+            projects
+                .entry(proj.clone())
+                .or_default()
+                .push(entry.name.clone());
         }
     }
     let result: Vec<Value> = projects
@@ -434,6 +444,7 @@ fn tool_check_health(db: &Database) -> Result<Value> {
     let mut expiring_soon = Vec::new();
     let mut unused_30d = Vec::new();
     let mut inactive = Vec::new();
+    let mut metadata_review = Vec::new();
 
     let now = chrono::Utc::now();
 
@@ -447,12 +458,11 @@ fn tool_check_health(db: &Database) -> Result<Value> {
             crate::models::KeyStatus::ExpiringSoon => expiring_soon.push(secret_to_metadata(entry)),
             _ => {}
         }
-        if let Some(last_used) = entry.last_used_at {
-            if now - last_used > chrono::Duration::days(30) {
-                unused_30d.push(secret_to_metadata(entry));
-            }
-        } else if now - entry.created_at > chrono::Duration::days(30) {
+        if entry.is_unused_for_days(now, 30) {
             unused_30d.push(secret_to_metadata(entry));
+        }
+        if entry.has_metadata_gaps() {
+            metadata_review.push(secret_to_metadata(entry));
         }
     }
 
@@ -461,6 +471,7 @@ fn tool_check_health(db: &Database) -> Result<Value> {
         "expiring_soon": { "count": expiring_soon.len(), "keys": expiring_soon },
         "unused_30_days": { "count": unused_30d.len(), "keys": unused_30d },
         "inactive": { "count": inactive.len(), "keys": inactive },
+        "metadata_review": { "count": metadata_review.len(), "keys": metadata_review },
     }))
 }
 
@@ -494,7 +505,14 @@ fn tool_deploy_secret(db: &Database, args: &Value) -> Result<Value> {
     let entry = db.get_secret(secret_name)?;
     let value = db.get_secret_value(secret_name)?;
 
-    let result = run_deploy(&entry.env_var, &value, target, environment, app, working_dir)?;
+    let result = run_deploy(
+        &entry.env_var,
+        &value,
+        target,
+        environment,
+        app,
+        working_dir,
+    )?;
     Ok(result)
 }
 
@@ -536,9 +554,20 @@ fn tool_deploy_project_secrets(db: &Database, args: &Value) -> Result<Value> {
             }
         };
 
-        match run_deploy(&entry.env_var, &value, target, environment, app, working_dir) {
+        match run_deploy(
+            &entry.env_var,
+            &value,
+            target,
+            environment,
+            app,
+            working_dir,
+        ) {
             Ok(result) => {
-                if result.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+                if result
+                    .get("success")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
                     deployed.push(json!({
                         "env_var": entry.env_var,
                         "name": entry.name,
@@ -629,11 +658,14 @@ fn run_deploy(
             // heroku config:set ENV_VAR=value [--app <app>]
             // Use a temp env var to avoid value in CLI args visible via `ps`
             let mut c = Command::new("sh");
-            c.args(["-c", &format!(
-                "printf '%s' \"$__KF_VAL\" | heroku config:set {}=\"$(cat)\"{}",
-                env_var,
-                app.map(|a| format!(" --app {}", a)).unwrap_or_default()
-            )]);
+            c.args([
+                "-c",
+                &format!(
+                    "printf '%s' \"$__KF_VAL\" | heroku config:set {}=\"$(cat)\"{}",
+                    env_var,
+                    app.map(|a| format!(" --app {}", a)).unwrap_or_default()
+                ),
+            ]);
             c.env("__KF_VAL", value);
             c
         }
@@ -641,10 +673,7 @@ fn run_deploy(
             // netlify env:set ENV_VAR --value $val
             // Pass value via env var to keep it out of `ps`
             let mut c = Command::new("sh");
-            c.args(["-c", &format!(
-                "netlify env:set {} \"$__KF_VAL\"",
-                env_var
-            )]);
+            c.args(["-c", &format!("netlify env:set {} \"$__KF_VAL\"", env_var)]);
             c.env("__KF_VAL", value);
             c
         }
@@ -652,10 +681,10 @@ fn run_deploy(
             // railway variables set ENV_VAR=value
             // Pass value via env var to keep it out of `ps`
             let mut c = Command::new("sh");
-            c.args(["-c", &format!(
-                "railway variables set {}=\"$__KF_VAL\"",
-                env_var
-            )]);
+            c.args([
+                "-c",
+                &format!("railway variables set {}=\"$__KF_VAL\"", env_var),
+            ]);
             c.env("__KF_VAL", value);
             c
         }
@@ -745,11 +774,17 @@ fn tool_add_key(db: &Database, args: &Value) -> Result<Value> {
     let provider = get_str(args, "provider").unwrap_or("");
     let description = get_str(args, "description").unwrap_or("");
     let group = get_str(args, "group").unwrap_or("");
+    let account_name = get_str(args, "account_name").unwrap_or("");
+    let source = get_str(args, "source").unwrap_or("mcp:add_key");
 
     let projects: Vec<String> = args
         .get("projects")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     // Auto-detect provider from env_var if not specified
@@ -777,7 +812,9 @@ fn tool_add_key(db: &Database, args: &Value) -> Result<Value> {
         name: name.clone(),
         env_var: env_var.to_string(),
         provider: provider.clone(),
+        account_name: account_name.to_string(),
         description: description.to_string(),
+        source: source.to_string(),
         scopes: Vec::new(),
         projects,
         apply_url: String::new(),
@@ -785,6 +822,7 @@ fn tool_add_key(db: &Database, args: &Value) -> Result<Value> {
         created_at: now,
         updated_at: now,
         last_used_at: None,
+        last_verified_at: Some(now),
         is_active: true,
         key_group: group.to_string(),
     };
@@ -804,13 +842,18 @@ fn tool_add_key(db: &Database, args: &Value) -> Result<Value> {
 fn guess_provider(env_var: &str) -> String {
     let upper = env_var.to_uppercase();
     let providers = [
-        ("GOOGLE", "google"), ("GCP", "google"),
-        ("GITHUB", "github"), ("GH_", "github"),
-        ("CLOUDFLARE", "cloudflare"), ("CF_", "cloudflare"), ("WRANGLER", "cloudflare"),
+        ("GOOGLE", "google"),
+        ("GCP", "google"),
+        ("GITHUB", "github"),
+        ("GH_", "github"),
+        ("CLOUDFLARE", "cloudflare"),
+        ("CF_", "cloudflare"),
+        ("WRANGLER", "cloudflare"),
         ("AWS", "aws"),
         ("AZURE", "azure"),
         ("OPENAI", "openai"),
-        ("ANTHROPIC", "anthropic"), ("CLAUDE", "anthropic"),
+        ("ANTHROPIC", "anthropic"),
+        ("CLAUDE", "anthropic"),
         ("STRIPE", "stripe"),
         ("VERCEL", "vercel"),
         ("SUPABASE", "supabase"),
@@ -821,7 +864,8 @@ fn guess_provider(env_var: &str) -> String {
         ("DOCKER", "docker"),
         ("NPM", "npm"),
         ("PYPI", "pypi"),
-        ("FLY_", "fly"), ("FLYIO", "fly"),
+        ("FLY_", "fly"),
+        ("FLYIO", "fly"),
         ("HEROKU", "heroku"),
         ("NETLIFY", "netlify"),
         ("RAILWAY", "railway"),
@@ -839,7 +883,10 @@ fn guess_provider(env_var: &str) -> String {
 fn tool_get_env_snippet(db: &Database, args: &Value) -> Result<Value> {
     let project = get_str(args, "project");
     let group = get_str(args, "group");
-    let mask_values = args.get("mask_values").and_then(|v| v.as_bool()).unwrap_or(true);
+    let mask_values = args
+        .get("mask_values")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
 
     if project.is_none() && group.is_none() {
         bail!("At least one of 'project' or 'group' must be specified");
@@ -896,7 +943,11 @@ fn tool_check_project_readiness(db: &Database, args: &Value) -> Result<Value> {
     let required_vars: Vec<String> = args
         .get("required_vars")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     let entries = db.list_secrets(&ListFilter {

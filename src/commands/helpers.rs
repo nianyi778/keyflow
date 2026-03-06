@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{NaiveDate, TimeZone, Utc};
+use std::path::Path;
 
 use crate::crypto::Crypto;
 
@@ -16,6 +17,7 @@ pub(crate) const PROVIDERS: &[&str] = &[
     "supabase",
     "firebase",
     "twilio",
+    "resend",
     "sendgrid",
     "slack",
     "docker",
@@ -38,6 +40,7 @@ pub(crate) fn infer_provider(env_var: &str) -> Option<&'static str> {
         (&["VERCEL"], "vercel"),
         (&["SUPABASE"], "supabase"),
         (&["TWILIO"], "twilio"),
+        (&["RESEND"], "resend"),
         (&["SENDGRID"], "sendgrid"),
         (&["SLACK"], "slack"),
         (&["DOCKER"], "docker"),
@@ -54,12 +57,19 @@ pub(crate) fn infer_provider(env_var: &str) -> Option<&'static str> {
 }
 
 pub(crate) fn detect_project_name() -> Option<String> {
-    if let Ok(content) = std::fs::read_to_string("package.json") {
+    detect_project_name_in_dir(Path::new("."))
+}
+
+pub(crate) fn detect_project_name_in_dir(dir: &Path) -> Option<String> {
+    let package_json = dir.join("package.json");
+    let cargo_toml = dir.join("Cargo.toml");
+
+    if let Ok(content) = std::fs::read_to_string(package_json) {
         if let Some(name) = parse_project_name_from_package_json(&content) {
             return Some(name);
         }
     }
-    if let Ok(content) = std::fs::read_to_string("Cargo.toml") {
+    if let Ok(content) = std::fs::read_to_string(cargo_toml) {
         if let Some(name) = parse_project_name_from_cargo_toml(&content) {
             return Some(name);
         }
@@ -169,6 +179,7 @@ pub(crate) fn get_default_url(provider: &str) -> String {
             "https://console.firebase.google.com/project/_/settings/serviceaccounts".to_string()
         }
         "twilio" => "https://console.twilio.com/".to_string(),
+        "resend" => "https://resend.com/api-keys".to_string(),
         "sendgrid" => "https://app.sendgrid.com/settings/api_keys".to_string(),
         "slack" => "https://api.slack.com/apps".to_string(),
         "docker" => "https://hub.docker.com/settings/security".to_string(),
@@ -218,6 +229,21 @@ name = "kf"
         assert_eq!(
             parse_project_name_from_cargo_toml(toml),
             Some("keyflow".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_project_name_in_dir_reads_package_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{ "name": "marketing-site" }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            detect_project_name_in_dir(dir.path()),
+            Some("marketing-site".to_string())
         );
     }
 

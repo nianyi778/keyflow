@@ -3,9 +3,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, Cell, Paragraph, Row, Table, TableState, Tabs, Padding,
-};
+use ratatui::widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Table, TableState, Tabs};
 use ratatui::Frame;
 use std::time::Duration;
 
@@ -82,28 +80,42 @@ impl App {
     }
 
     fn reload(&mut self) {
-        self.secrets = self.db
-            .list_secrets(&ListFilter { inactive: true, ..Default::default() })
+        self.secrets = self
+            .db
+            .list_secrets(&ListFilter {
+                inactive: true,
+                ..Default::default()
+            })
             .unwrap_or_default();
 
         let now = chrono::Utc::now();
-        self.health_expired = self.secrets.iter()
+        self.health_expired = self
+            .secrets
+            .iter()
             .filter(|e| matches!(e.status(), KeyStatus::Expired))
-            .cloned().collect();
-        self.health_expiring = self.secrets.iter()
+            .cloned()
+            .collect();
+        self.health_expiring = self
+            .secrets
+            .iter()
             .filter(|e| matches!(e.status(), KeyStatus::ExpiringSoon))
-            .cloned().collect();
-        self.health_unused = self.secrets.iter()
+            .cloned()
+            .collect();
+        self.health_unused = self
+            .secrets
+            .iter()
             .filter(|e| {
                 e.is_active && {
                     let last = e.last_used_at.unwrap_or(e.created_at);
                     (now - last).num_days() > 30
                 }
             })
-            .cloned().collect();
+            .cloned()
+            .collect();
 
         // groups
-        let mut gmap: std::collections::HashMap<String, Vec<SecretEntry>> = std::collections::HashMap::new();
+        let mut gmap: std::collections::HashMap<String, Vec<SecretEntry>> =
+            std::collections::HashMap::new();
         for e in &self.secrets {
             if !e.key_group.is_empty() {
                 gmap.entry(e.key_group.clone()).or_default().push(e.clone());
@@ -117,12 +129,19 @@ impl App {
 
     fn apply_filter(&mut self) {
         let q = self.search.to_lowercase();
-        self.filtered = self.secrets.iter().enumerate()
+        self.filtered = self
+            .secrets
+            .iter()
+            .enumerate()
             .filter(|(_, e)| {
-                if q.is_empty() { return true; }
+                if q.is_empty() {
+                    return true;
+                }
                 e.name.to_lowercase().contains(&q)
                     || e.env_var.to_lowercase().contains(&q)
                     || e.provider.to_lowercase().contains(&q)
+                    || e.account_name.to_lowercase().contains(&q)
+                    || e.source.to_lowercase().contains(&q)
                     || e.key_group.to_lowercase().contains(&q)
                     || e.description.to_lowercase().contains(&q)
                     || e.projects.iter().any(|p| p.to_lowercase().contains(&q))
@@ -144,21 +163,30 @@ impl App {
     }
 
     fn selected_secret(&self) -> Option<&SecretEntry> {
-        self.table_state.selected()
+        self.table_state
+            .selected()
             .and_then(|i| self.filtered.get(i))
             .and_then(|&idx| self.secrets.get(idx))
     }
 
     fn next_row(&mut self) {
-        if self.filtered.is_empty() { return; }
+        if self.filtered.is_empty() {
+            return;
+        }
         let i = self.table_state.selected().unwrap_or(0);
         self.table_state.select(Some((i + 1) % self.filtered.len()));
     }
 
     fn prev_row(&mut self) {
-        if self.filtered.is_empty() { return; }
+        if self.filtered.is_empty() {
+            return;
+        }
         let i = self.table_state.selected().unwrap_or(0);
-        let prev = if i == 0 { self.filtered.len() - 1 } else { i - 1 };
+        let prev = if i == 0 {
+            self.filtered.len() - 1
+        } else {
+            i - 1
+        };
         self.table_state.select(Some(prev));
     }
 
@@ -205,19 +233,31 @@ impl App {
     fn handle_event(&mut self) -> bool {
         if event::poll(Duration::from_millis(100)).unwrap_or(false) {
             if let Ok(Event::Key(key)) = event::read() {
-                if key.kind != KeyEventKind::Press { return false; }
+                if key.kind != KeyEventKind::Press {
+                    return false;
+                }
 
                 // Tick down copied message
                 if self.copied_tick > 0 {
                     self.copied_tick = self.copied_tick.saturating_sub(1);
-                    if self.copied_tick == 0 { self.copied_msg = None; }
+                    if self.copied_tick == 0 {
+                        self.copied_msg = None;
+                    }
                 }
 
                 match self.input_mode {
                     InputMode::Normal => match key.code {
-                        KeyCode::Char('q') => { self.quit = true; return true; }
-                        KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                            self.quit = true; return true;
+                        KeyCode::Char('q') => {
+                            self.quit = true;
+                            return true;
+                        }
+                        KeyCode::Char('c')
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
+                            self.quit = true;
+                            return true;
                         }
                         KeyCode::Char('/') => {
                             self.input_mode = InputMode::Search;
@@ -266,8 +306,13 @@ impl App {
                         KeyCode::Esc | KeyCode::Enter => {
                             self.input_mode = InputMode::Normal;
                         }
-                        KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                            self.quit = true; return true;
+                        KeyCode::Char('c')
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
+                            self.quit = true;
+                            return true;
                         }
                         KeyCode::Char(c) => {
                             self.search.push(c);
@@ -285,7 +330,9 @@ impl App {
             // Tick down copied message even when no event
             if self.copied_tick > 0 {
                 self.copied_tick = self.copied_tick.saturating_sub(1);
-                if self.copied_tick == 0 { self.copied_msg = None; }
+                if self.copied_tick == 0 {
+                    self.copied_msg = None;
+                }
             }
         }
         false
@@ -306,7 +353,8 @@ fn render(frame: &mut Frame, app: &mut App) {
         Constraint::Length(3),
         Constraint::Fill(1),
         Constraint::Length(1),
-    ]).areas(area);
+    ])
+    .areas(area);
 
     render_header(frame, app, header_area);
     render_tabs(frame, app, tabs_area);
@@ -325,18 +373,27 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(22),
         Constraint::Fill(1),
         Constraint::Length(24),
-    ]).areas(area);
+    ])
+    .areas(area);
 
     // Logo
     let logo = Paragraph::new(Line::from(vec![
-        Span::styled(" Key", Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD)),
-        Span::styled("Flow", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " Key",
+            Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "Flow",
+            Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" ", Style::default()),
     ]))
-    .block(Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(C_BORDER))
-        .style(Style::default().bg(C_SURFACE)))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(C_BORDER))
+            .style(Style::default().bg(C_SURFACE)),
+    )
     .alignment(Alignment::Center);
     frame.render_widget(logo, logo_area);
 
@@ -347,7 +404,12 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     };
     let search_text = if app.search.is_empty() {
         match app.input_mode {
-            InputMode::Search => Line::from(Span::styled("_", Style::default().fg(C_CYAN).add_modifier(Modifier::SLOW_BLINK))),
+            InputMode::Search => Line::from(Span::styled(
+                "_",
+                Style::default()
+                    .fg(C_CYAN)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            )),
             InputMode::Normal => Line::from(Span::styled(
                 "  Press / to search...",
                 Style::default().fg(C_DIM),
@@ -358,19 +420,25 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("  ", Style::default()),
             Span::styled(&app.search, Style::default().fg(C_CYAN)),
             if matches!(app.input_mode, InputMode::Search) {
-                Span::styled("_", Style::default().fg(C_CYAN).add_modifier(Modifier::SLOW_BLINK))
+                Span::styled(
+                    "_",
+                    Style::default()
+                        .fg(C_CYAN)
+                        .add_modifier(Modifier::SLOW_BLINK),
+                )
             } else {
                 Span::raw("")
             },
         ])
     };
 
-    let search = Paragraph::new(search_text)
-        .block(Block::default()
+    let search = Paragraph::new(search_text).block(
+        Block::default()
             .borders(Borders::ALL)
             .border_style(search_style)
             .title(Span::styled(" Search ", Style::default().fg(C_DIM)))
-            .style(Style::default().bg(C_SURFACE)));
+            .style(Style::default().bg(C_SURFACE)),
+    );
     frame.render_widget(search, search_area);
 
     // Status
@@ -379,10 +447,12 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled("●", Style::default().fg(C_GREEN)),
         Span::styled(" VAULT UNLOCKED", Style::default().fg(C_DIM)),
     ]))
-    .block(Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(C_BORDER))
-        .style(Style::default().bg(C_SURFACE)));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(C_BORDER))
+            .style(Style::default().bg(C_SURFACE)),
+    );
     frame.render_widget(status, status_area);
 }
 
@@ -408,10 +478,12 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
         health_title,
         format!(" Groups [{}] ", app.groups.len()),
     ])
-    .block(Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(C_BORDER))
-        .style(Style::default().bg(C_SURFACE)))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(C_BORDER))
+            .style(Style::default().bg(C_SURFACE)),
+    )
     .select(tab_index)
     .style(Style::default().fg(C_DIM))
     .highlight_style(Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD))
@@ -423,10 +495,9 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
 fn render_secrets_tab(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.show_detail {
         // Split: table left, detail right
-        let [table_area, detail_area] = Layout::horizontal([
-            Constraint::Percentage(55),
-            Constraint::Percentage(45),
-        ]).areas(area);
+        let [table_area, detail_area] =
+            Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
+                .areas(area);
         render_secrets_table(frame, app, table_area);
         render_detail_panel(frame, app, detail_area);
     } else {
@@ -442,30 +513,48 @@ fn render_secrets_table(frame: &mut Frame, app: &mut App, area: Rect) {
         Cell::from("GROUP").style(Style::default().fg(C_DIM).add_modifier(Modifier::BOLD)),
         Cell::from("STATUS").style(Style::default().fg(C_DIM).add_modifier(Modifier::BOLD)),
         Cell::from("EXPIRES").style(Style::default().fg(C_DIM).add_modifier(Modifier::BOLD)),
-    ]).bottom_margin(0);
+    ])
+    .bottom_margin(0);
 
-    let rows: Vec<Row> = app.filtered.iter().map(|&idx| {
-        let e = &app.secrets[idx];
-        let status_style = match e.status() {
-            KeyStatus::Active => Style::default().fg(C_GREEN),
-            KeyStatus::Expired => Style::default().fg(C_RED),
-            KeyStatus::ExpiringSoon => Style::default().fg(C_YELLOW),
-            KeyStatus::Inactive => Style::default().fg(C_DIM),
-            KeyStatus::Unknown => Style::default().fg(C_DIM),
-        };
-        let provider_color = provider_color(&e.provider);
+    let rows: Vec<Row> = app
+        .filtered
+        .iter()
+        .map(|&idx| {
+            let e = &app.secrets[idx];
+            let status_style = match e.status() {
+                KeyStatus::Active => Style::default().fg(C_GREEN),
+                KeyStatus::Expired => Style::default().fg(C_RED),
+                KeyStatus::ExpiringSoon => Style::default().fg(C_YELLOW),
+                KeyStatus::Inactive => Style::default().fg(C_DIM),
+                KeyStatus::Unknown => Style::default().fg(C_DIM),
+            };
+            let provider_color = provider_color(&e.provider);
 
-        Row::new(vec![
-            Cell::from(e.name.as_str()).style(Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD)),
-            Cell::from(e.env_var.as_str()).style(Style::default().fg(C_YELLOW)),
-            Cell::from(e.provider.as_str()).style(Style::default().fg(provider_color)),
-            Cell::from(if e.key_group.is_empty() { "-" } else { e.key_group.as_str() })
-                .style(Style::default().fg(if e.key_group.is_empty() { C_DIM } else { C_PURPLE })),
-            Cell::from(format!("{}", e.status())).style(status_style),
-            Cell::from(e.expires_at.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_else(|| "-".to_string()))
+            Row::new(vec![
+                Cell::from(e.name.as_str())
+                    .style(Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD)),
+                Cell::from(e.env_var.as_str()).style(Style::default().fg(C_YELLOW)),
+                Cell::from(e.provider.as_str()).style(Style::default().fg(provider_color)),
+                Cell::from(if e.key_group.is_empty() {
+                    "-"
+                } else {
+                    e.key_group.as_str()
+                })
+                .style(Style::default().fg(if e.key_group.is_empty() {
+                    C_DIM
+                } else {
+                    C_PURPLE
+                })),
+                Cell::from(format!("{}", e.status())).style(status_style),
+                Cell::from(
+                    e.expires_at
+                        .map(|d| d.format("%Y-%m-%d").to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                )
                 .style(Style::default().fg(C_DIM)),
-        ])
-    }).collect();
+            ])
+        })
+        .collect();
 
     let widths = [
         Constraint::Percentage(20),
@@ -478,13 +567,22 @@ fn render_secrets_table(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let table = Table::new(rows, widths)
         .header(header)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(C_BORDER))
-            .title(Span::styled(" Secrets ", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD)))
-            .style(Style::default().bg(C_SURFACE))
-            .padding(Padding::horizontal(1)))
-        .row_highlight_style(Style::default().bg(Color::Rgb(20, 35, 55)).add_modifier(Modifier::BOLD))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(C_BORDER))
+                .title(Span::styled(
+                    " Secrets ",
+                    Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD),
+                ))
+                .style(Style::default().bg(C_SURFACE))
+                .padding(Padding::horizontal(1)),
+        )
+        .row_highlight_style(
+            Style::default()
+                .bg(Color::Rgb(20, 35, 55))
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol(" > ");
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
@@ -496,10 +594,12 @@ fn render_detail_panel(frame: &mut Frame, app: &App, area: Rect) {
         None => {
             let empty = Paragraph::new("No secret selected")
                 .style(Style::default().fg(C_DIM))
-                .block(Block::bordered()
-                    .border_style(Style::default().fg(C_BORDER))
-                    .title(Span::styled(" Detail ", Style::default().fg(C_CYAN)))
-                    .style(Style::default().bg(C_SURFACE)));
+                .block(
+                    Block::bordered()
+                        .border_style(Style::default().fg(C_BORDER))
+                        .title(Span::styled(" Detail ", Style::default().fg(C_CYAN)))
+                        .style(Style::default().bg(C_SURFACE)),
+                );
             frame.render_widget(empty, area);
             return;
         }
@@ -516,7 +616,10 @@ fn render_detail_panel(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from(vec![
             Span::styled("  Name      ", Style::default().fg(C_DIM)),
-            Span::styled(&entry.name, Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                &entry.name,
+                Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  Env Var   ", Style::default().fg(C_DIM)),
@@ -524,17 +627,33 @@ fn render_detail_panel(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  Provider  ", Style::default().fg(C_DIM)),
-            Span::styled(&entry.provider, Style::default().fg(provider_color(&entry.provider))),
+            Span::styled(
+                &entry.provider,
+                Style::default().fg(provider_color(&entry.provider)),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  Status    ", Style::default().fg(C_DIM)),
-            Span::styled(format!("{}", entry.status()), Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{}", entry.status()),
+                Style::default()
+                    .fg(status_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  Group     ", Style::default().fg(C_DIM)),
             Span::styled(
-                if entry.key_group.is_empty() { "-".to_string() } else { entry.key_group.clone() },
-                Style::default().fg(if entry.key_group.is_empty() { C_DIM } else { C_PURPLE }),
+                if entry.key_group.is_empty() {
+                    "-".to_string()
+                } else {
+                    entry.key_group.clone()
+                },
+                Style::default().fg(if entry.key_group.is_empty() {
+                    C_DIM
+                } else {
+                    C_PURPLE
+                }),
             ),
         ]),
     ];
@@ -543,6 +662,13 @@ fn render_detail_panel(frame: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(vec![
             Span::styled("  Desc      ", Style::default().fg(C_DIM)),
             Span::styled(&entry.description, Style::default().fg(C_TEXT)),
+        ]));
+    }
+
+    if !entry.account_name.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  Account   ", Style::default().fg(C_DIM)),
+            Span::styled(&entry.account_name, Style::default().fg(C_BLUE)),
         ]));
     }
 
@@ -560,19 +686,26 @@ fn render_detail_panel(frame: &mut Frame, app: &App, area: Rect) {
         ]));
     }
 
-    let expires = entry.expires_at
+    let expires = entry
+        .expires_at
         .map(|d| d.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| "-".to_string());
     lines.push(Line::from(vec![
         Span::styled("  Expires   ", Style::default().fg(C_DIM)),
-        Span::styled(expires, Style::default().fg(
-            if matches!(entry.status(), KeyStatus::Expired) { C_RED }
-            else if matches!(entry.status(), KeyStatus::ExpiringSoon) { C_YELLOW }
-            else { C_DIM }
-        )),
+        Span::styled(
+            expires,
+            Style::default().fg(if matches!(entry.status(), KeyStatus::Expired) {
+                C_RED
+            } else if matches!(entry.status(), KeyStatus::ExpiringSoon) {
+                C_YELLOW
+            } else {
+                C_DIM
+            }),
+        ),
     ]));
 
-    let last_used = entry.last_used_at
+    let last_used = entry
+        .last_used_at
         .map(|d| d.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| "never".to_string());
     lines.push(Line::from(vec![
@@ -580,10 +713,31 @@ fn render_detail_panel(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(last_used, Style::default().fg(C_DIM)),
     ]));
 
+    let last_verified = entry
+        .last_verified_at
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    lines.push(Line::from(vec![
+        Span::styled("  Verified  ", Style::default().fg(C_DIM)),
+        Span::styled(last_verified, Style::default().fg(C_DIM)),
+    ]));
+
     if !entry.apply_url.is_empty() {
         lines.push(Line::from(vec![
             Span::styled("  URL       ", Style::default().fg(C_DIM)),
-            Span::styled(&entry.apply_url, Style::default().fg(C_CYAN).add_modifier(Modifier::UNDERLINED)),
+            Span::styled(
+                &entry.apply_url,
+                Style::default()
+                    .fg(C_CYAN)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+        ]));
+    }
+
+    if !entry.source.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  Source    ", Style::default().fg(C_DIM)),
+            Span::styled(&entry.source, Style::default().fg(C_DIM)),
         ]));
     }
 
@@ -602,12 +756,16 @@ fn render_detail_panel(frame: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
-    let detail = Paragraph::new(lines)
-        .block(Block::default()
+    let detail = Paragraph::new(lines).block(
+        Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(C_BORDER_HI))
-            .title(Span::styled(" Detail ", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD)))
-            .style(Style::default().bg(C_SURFACE)));
+            .title(Span::styled(
+                " Detail ",
+                Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD),
+            ))
+            .style(Style::default().bg(C_SURFACE)),
+    );
 
     frame.render_widget(detail, area);
 }
@@ -617,43 +775,82 @@ fn render_health_tab(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Percentage(33),
         Constraint::Percentage(34),
         Constraint::Percentage(33),
-    ]).areas(area);
+    ])
+    .areas(area);
 
     // Expired
-    render_health_section(frame, " Expired Keys ", &app.health_expired, C_RED, expired_area);
+    render_health_section(
+        frame,
+        " Expired Keys ",
+        &app.health_expired,
+        C_RED,
+        expired_area,
+    );
     // Expiring
-    render_health_section(frame, " Expiring Soon ", &app.health_expiring, C_YELLOW, expiring_area);
+    render_health_section(
+        frame,
+        " Expiring Soon ",
+        &app.health_expiring,
+        C_YELLOW,
+        expiring_area,
+    );
     // Unused
-    render_health_section(frame, " Unused >30 Days ", &app.health_unused, C_DIM, unused_area);
+    render_health_section(
+        frame,
+        " Unused >30 Days ",
+        &app.health_unused,
+        C_DIM,
+        unused_area,
+    );
 }
 
-fn render_health_section(frame: &mut Frame, title: &str, entries: &[SecretEntry], color: Color, area: Rect) {
+fn render_health_section(
+    frame: &mut Frame,
+    title: &str,
+    entries: &[SecretEntry],
+    color: Color,
+    area: Rect,
+) {
     if entries.is_empty() {
         let msg = Paragraph::new(Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled("OK", Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "OK",
+                Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" - No issues".to_string(), Style::default().fg(C_DIM)),
         ]))
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(C_BORDER))
-            .title(Span::styled(
-                format!("{} [0]", title),
-                Style::default().fg(color),
-            ))
-            .style(Style::default().bg(C_SURFACE)));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(C_BORDER))
+                .title(Span::styled(
+                    format!("{} [0]", title),
+                    Style::default().fg(color),
+                ))
+                .style(Style::default().bg(C_SURFACE)),
+        );
         frame.render_widget(msg, area);
         return;
     }
 
-    let rows: Vec<Row> = entries.iter().map(|e| {
-        Row::new(vec![
-            Cell::from(e.name.as_str()).style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
-            Cell::from(e.provider.as_str()).style(Style::default().fg(provider_color(&e.provider))),
-            Cell::from(e.expires_at.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default())
+    let rows: Vec<Row> = entries
+        .iter()
+        .map(|e| {
+            Row::new(vec![
+                Cell::from(e.name.as_str())
+                    .style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                Cell::from(e.provider.as_str())
+                    .style(Style::default().fg(provider_color(&e.provider))),
+                Cell::from(
+                    e.expires_at
+                        .map(|d| d.format("%Y-%m-%d").to_string())
+                        .unwrap_or_default(),
+                )
                 .style(Style::default().fg(C_DIM)),
-        ])
-    }).collect();
+            ])
+        })
+        .collect();
 
     let widths = [
         Constraint::Percentage(40),
@@ -661,8 +858,8 @@ fn render_health_section(frame: &mut Frame, title: &str, entries: &[SecretEntry]
         Constraint::Percentage(30),
     ];
 
-    let table = Table::new(rows, widths)
-        .block(Block::default()
+    let table = Table::new(rows, widths).block(
+        Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(C_BORDER))
             .title(Span::styled(
@@ -670,7 +867,8 @@ fn render_health_section(frame: &mut Frame, title: &str, entries: &[SecretEntry]
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ))
             .style(Style::default().bg(C_SURFACE))
-            .padding(Padding::horizontal(1)));
+            .padding(Padding::horizontal(1)),
+    );
 
     frame.render_widget(table, area);
 }
@@ -681,37 +879,45 @@ fn render_groups_tab(frame: &mut Frame, app: &App, area: Rect) {
             "  No groups defined. Use `kf update <name> --group <group>` to create groups.",
             Style::default().fg(C_DIM),
         )))
-        .block(Block::bordered()
-            .border_style(Style::default().fg(C_BORDER))
-            .title(Span::styled(" Groups ", Style::default().fg(C_PURPLE).add_modifier(Modifier::BOLD)))
-            .style(Style::default().bg(C_SURFACE)));
+        .block(
+            Block::bordered()
+                .border_style(Style::default().fg(C_BORDER))
+                .title(Span::styled(
+                    " Groups ",
+                    Style::default().fg(C_PURPLE).add_modifier(Modifier::BOLD),
+                ))
+                .style(Style::default().bg(C_SURFACE)),
+        );
         frame.render_widget(msg, area);
         return;
     }
 
     // Show groups as sections
-    let constraints: Vec<Constraint> = app.groups.iter()
-        .map(|_| Constraint::Min(4))
-        .collect();
+    let constraints: Vec<Constraint> = app.groups.iter().map(|_| Constraint::Min(4)).collect();
 
     let areas = Layout::vertical(constraints).split(area);
 
     for (i, (group_name, keys)) in app.groups.iter().enumerate() {
-        if i >= areas.len() { break; }
+        if i >= areas.len() {
+            break;
+        }
 
-        let rows: Vec<Row> = keys.iter().map(|e| {
-            let status_color = match e.status() {
-                KeyStatus::Active => C_GREEN,
-                KeyStatus::Expired => C_RED,
-                KeyStatus::ExpiringSoon => C_YELLOW,
-                _ => C_DIM,
-            };
-            Row::new(vec![
-                Cell::from(e.name.as_str()).style(Style::default().fg(C_TEXT)),
-                Cell::from(e.env_var.as_str()).style(Style::default().fg(C_YELLOW)),
-                Cell::from(format!("{}", e.status())).style(Style::default().fg(status_color)),
-            ])
-        }).collect();
+        let rows: Vec<Row> = keys
+            .iter()
+            .map(|e| {
+                let status_color = match e.status() {
+                    KeyStatus::Active => C_GREEN,
+                    KeyStatus::Expired => C_RED,
+                    KeyStatus::ExpiringSoon => C_YELLOW,
+                    _ => C_DIM,
+                };
+                Row::new(vec![
+                    Cell::from(e.name.as_str()).style(Style::default().fg(C_TEXT)),
+                    Cell::from(e.env_var.as_str()).style(Style::default().fg(C_YELLOW)),
+                    Cell::from(format!("{}", e.status())).style(Style::default().fg(status_color)),
+                ])
+            })
+            .collect();
 
         let widths = [
             Constraint::Percentage(35),
@@ -719,8 +925,8 @@ fn render_groups_tab(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Percentage(25),
         ];
 
-        let table = Table::new(rows, widths)
-            .block(Block::default()
+        let table = Table::new(rows, widths).block(
+            Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(C_BORDER))
                 .title(Span::styled(
@@ -728,7 +934,8 @@ fn render_groups_tab(frame: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(C_PURPLE).add_modifier(Modifier::BOLD),
                 ))
                 .style(Style::default().bg(C_SURFACE))
-                .padding(Padding::horizontal(1)));
+                .padding(Padding::horizontal(1)),
+        );
 
         frame.render_widget(table, areas[i]);
     }
@@ -736,18 +943,35 @@ fn render_groups_tab(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let mode_span = match app.input_mode {
-        InputMode::Normal => Span::styled(" NORMAL ", Style::default().fg(C_BG).bg(C_CYAN).add_modifier(Modifier::BOLD)),
-        InputMode::Search => Span::styled(" SEARCH ", Style::default().fg(C_BG).bg(C_YELLOW).add_modifier(Modifier::BOLD)),
+        InputMode::Normal => Span::styled(
+            " NORMAL ",
+            Style::default()
+                .fg(C_BG)
+                .bg(C_CYAN)
+                .add_modifier(Modifier::BOLD),
+        ),
+        InputMode::Search => Span::styled(
+            " SEARCH ",
+            Style::default()
+                .fg(C_BG)
+                .bg(C_YELLOW)
+                .add_modifier(Modifier::BOLD),
+        ),
     };
 
     let help = match app.input_mode {
-        InputMode::Normal => " q:Quit  /:Search  j/k:Nav  Tab:Switch  Enter:Detail  y:Copy  r:Reload ",
+        InputMode::Normal => {
+            " q:Quit  /:Search  j/k:Nav  Tab:Switch  Enter:Detail  y:Copy  r:Reload "
+        }
         InputMode::Search => " Esc/Enter:Done  Type to filter... ",
     };
 
     // Copied message in footer
     let right_span = if let Some(ref msg) = app.copied_msg {
-        Span::styled(format!(" {} ", msg), Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD))
+        Span::styled(
+            format!(" {} ", msg),
+            Style::default().fg(C_GREEN).add_modifier(Modifier::BOLD),
+        )
     } else {
         Span::styled(
             format!(" v{} ", env!("CARGO_PKG_VERSION")),
@@ -761,7 +985,10 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         right_span,
     ]);
 
-    frame.render_widget(Paragraph::new(footer).style(Style::default().bg(C_BG)), area);
+    frame.render_widget(
+        Paragraph::new(footer).style(Style::default().bg(C_BG)),
+        area,
+    );
 }
 
 fn provider_color(provider: &str) -> Color {
@@ -778,6 +1005,7 @@ fn provider_color(provider: &str) -> Color {
         "firebase" => Color::Rgb(255, 202, 40),
         "docker" => Color::Rgb(36, 150, 237),
         "sendgrid" => Color::Rgb(26, 130, 226),
+        "resend" => Color::Rgb(0, 204, 153),
         _ => C_CYAN,
     }
 }
@@ -796,7 +1024,9 @@ pub fn cmd_tui() -> Result<()> {
 
     loop {
         terminal.draw(|frame| render(frame, &mut app))?;
-        if app.handle_event() { break; }
+        if app.handle_event() {
+            break;
+        }
     }
 
     ratatui::restore();

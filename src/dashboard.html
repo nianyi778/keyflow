@@ -442,6 +442,26 @@ body::after {
   font-size: 13px;
 }
 
+.key-meta {
+  margin-top: 6px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
 .env-var {
   font-family: var(--font-mono);
   font-size: 12px;
@@ -538,6 +558,7 @@ body::after {
 .provider-firebase::before { background: #ffca28; }
 .provider-docker::before { background: #2496ed; }
 .provider-sendgrid::before { background: #1a82e2; }
+.provider-resend::before { background: #00cc99; }
 .provider-slack::before { background: #e01e5a; }
 
 .expires-date {
@@ -789,6 +810,14 @@ body::after {
       </div>
       <div class="panel-body" id="expiring-list"></div>
     </div>
+    <div class="panel" id="panel-review">
+      <div class="panel-header" style="color:var(--accent-blue)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        <span data-i18n="metadata_review">Metadata Review</span>
+        <span class="count" id="review-count">0</span>
+      </div>
+      <div class="panel-body" id="review-list"></div>
+    </div>
   </div>
 
   <!-- Controls -->
@@ -834,7 +863,7 @@ body::after {
 </main>
 
 <footer class="footer">
-  KeyFlow v0.2.0 &mdash; AI-Native Secret Manager &mdash; 127.0.0.1 only
+  KeyFlow local dashboard &mdash; developer key vault &mdash; 127.0.0.1 only
 </footer>
 
 <script>
@@ -858,6 +887,7 @@ const I18N = {
     groups: 'Groups',
     expired_keys: 'Expired Keys',
     expiring_soon_keys: 'Expiring Soon',
+    metadata_review: 'Metadata Review',
     search_placeholder: 'Search keys, providers, env vars...',
     all_providers: 'All Providers',
     all_projects: 'All Projects',
@@ -873,6 +903,7 @@ const I18N = {
     no_secrets: 'No secrets found',
     no_expired: 'No expired keys',
     no_expiring: 'No keys expiring soon',
+    no_review: 'No metadata review items',
     renew: 'renew',
     load_failed: 'Failed to load',
   },
@@ -885,6 +916,7 @@ const I18N = {
     groups: '\u5206\u7EC4',
     expired_keys: '\u5DF2\u8FC7\u671F\u5BC6\u94A5',
     expiring_soon_keys: '\u5373\u5C06\u8FC7\u671F',
+    metadata_review: '\u5F85\u8865\u5145\u4FE1\u606F',
     search_placeholder: '\u641C\u7D22\u5BC6\u94A5\u3001\u63D0\u4F9B\u5546\u3001\u73AF\u5883\u53D8\u91CF...',
     all_providers: '\u6240\u6709\u63D0\u4F9B\u5546',
     all_projects: '\u6240\u6709\u9879\u76EE',
@@ -900,6 +932,7 @@ const I18N = {
     no_secrets: '\u672A\u627E\u5230\u5BC6\u94A5',
     no_expired: '\u6CA1\u6709\u8FC7\u671F\u5BC6\u94A5',
     no_expiring: '\u6CA1\u6709\u5373\u5C06\u8FC7\u671F\u7684\u5BC6\u94A5',
+    no_review: '\u6CA1\u6709\u5F85\u8865\u5145\u7684\u6761\u76EE',
     renew: '\u7EED\u671F',
     load_failed: '\u52A0\u8F7D\u5931\u8D25',
   },
@@ -912,6 +945,7 @@ const I18N = {
     groups: '\u30B0\u30EB\u30FC\u30D7',
     expired_keys: '\u671F\u9650\u5207\u308C\u30AD\u30FC',
     expiring_soon_keys: '\u307E\u3082\u306A\u304F\u671F\u9650\u5207\u308C',
+    metadata_review: '\u30E1\u30BF\u30C7\u30FC\u30BF\u898B\u76F4\u3057',
     search_placeholder: '\u30AD\u30FC\u3001\u30D7\u30ED\u30D0\u30A4\u30C0\u30FC\u3001\u74B0\u5883\u5909\u6570\u3092\u691C\u7D22...',
     all_providers: '\u3059\u3079\u3066\u306E\u30D7\u30ED\u30D0\u30A4\u30C0\u30FC',
     all_projects: '\u3059\u3079\u3066\u306E\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8',
@@ -927,6 +961,7 @@ const I18N = {
     no_secrets: '\u30AD\u30FC\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093',
     no_expired: '\u671F\u9650\u5207\u308C\u306E\u30AD\u30FC\u306F\u3042\u308A\u307E\u305B\u3093',
     no_expiring: '\u307E\u3082\u306A\u304F\u671F\u9650\u5207\u308C\u306E\u30AD\u30FC\u306F\u3042\u308A\u307E\u305B\u3093',
+    no_review: '\u898B\u76F4\u3057\u304C\u5FC5\u8981\u306A\u9805\u76EE\u306F\u3042\u308A\u307E\u305B\u3093',
     renew: '\u66F4\u65B0',
     load_failed: '\u8AAD\u307F\u8FBC\u307F\u5931\u6557',
   }
@@ -1045,7 +1080,13 @@ function renderSecrets(secrets) {
   }
   tbody.innerHTML = secrets.map(s => `
     <tr class="fade-in">
-      <td><span class="key-name">${esc(s.name)}</span></td>
+      <td>
+        <span class="key-name">${esc(s.name)}</span>
+        ${(s.account_name || s.source) ? `<div class="key-meta">
+          ${s.account_name ? `<span class="meta-chip">acct:${esc(s.account_name)}</span>` : ''}
+          ${s.source ? `<span class="meta-chip">src:${esc(s.source)}</span>` : ''}
+        </div>` : ''}
+      </td>
       <td><span class="env-var">${esc(s.env_var)}</span></td>
       <td><span class="provider-icon ${providerClass(s.provider)}"><span class="badge badge-provider">${esc(s.provider)}</span></span></td>
       <td>${s.key_group ? `<span class="badge badge-group">${esc(s.key_group)}</span>` : '<span style="color:var(--text-dim)">&mdash;</span>'}</td>
@@ -1076,7 +1117,9 @@ function applyFilters() {
       s.name.toLowerCase().includes(q) ||
       s.env_var.toLowerCase().includes(q) ||
       s.provider.toLowerCase().includes(q) ||
+      (s.account_name||'').toLowerCase().includes(q) ||
       (s.description||'').toLowerCase().includes(q) ||
+      (s.source||'').toLowerCase().includes(q) ||
       (s.key_group||'').toLowerCase().includes(q) ||
       (s.projects||[]).some(p => p.toLowerCase().includes(q))
     );
@@ -1099,7 +1142,7 @@ function populateFilters(secrets) {
 }
 
 function renderHealthPanels(health) {
-  const hasIssues = health.expired?.length || health.expiring_soon?.length;
+  const hasIssues = health.expired?.length || health.expiring_soon?.length || health.metadata_review?.length;
   document.getElementById('health-panels').style.display = hasIssues ? 'grid' : 'none';
 
   if (health.expired?.length) {
@@ -1126,6 +1169,19 @@ function renderHealthPanels(health) {
   } else {
     document.getElementById('panel-expiring').querySelector('.panel-body').innerHTML =
       `<div class="panel-empty">${SVG.checkCircle}<span>${t('no_expiring')}</span></div>`;
+  }
+
+  if (health.metadata_review?.length) {
+    document.getElementById('review-count').textContent = health.metadata_review.length;
+    document.getElementById('review-list').innerHTML = health.metadata_review.map(s => `
+      <div class="panel-item">
+        <span class="panel-item-name" style="color:var(--accent-blue)">${esc(s.name)}</span>
+        <span class="panel-item-meta">${esc((s.metadata_gaps || []).join(', '))}</span>
+      </div>
+    `).join('');
+  } else {
+    document.getElementById('panel-review').querySelector('.panel-body').innerHTML =
+      `<div class="panel-empty">${SVG.checkCircle}<span>${t('no_review')}</span></div>`;
   }
 }
 

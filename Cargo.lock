@@ -803,6 +803,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "tiny_http",
  "uuid",
 ]

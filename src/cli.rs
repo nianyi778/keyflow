@@ -55,6 +55,9 @@ pub enum Commands {
         /// Provider (auto-detected from env var name if omitted)
         #[arg(short, long)]
         provider: Option<String>,
+        /// Account, organization, or workspace name for this key
+        #[arg(long)]
+        account: Option<String>,
         /// Project tags (comma-separated)
         #[arg(short = 'P', long)]
         projects: Option<String>,
@@ -64,6 +67,9 @@ pub enum Commands {
         /// Description
         #[arg(short, long)]
         desc: Option<String>,
+        /// Where this key came from (e.g. manual, imported:.env, oauth-app)
+        #[arg(long)]
+        source: Option<String>,
         /// Expiry date (YYYY-MM-DD)
         #[arg(short, long)]
         expires: Option<String>,
@@ -122,9 +128,15 @@ pub enum Commands {
         /// New provider
         #[arg(long)]
         provider: Option<String>,
+        /// New account, organization, or workspace name
+        #[arg(long)]
+        account: Option<String>,
         /// New description
         #[arg(long)]
         desc: Option<String>,
+        /// New source label
+        #[arg(long)]
+        source: Option<String>,
         /// New comma-separated scopes
         #[arg(long)]
         scopes: Option<String>,
@@ -161,16 +173,22 @@ pub enum Commands {
         command: Vec<String>,
     },
 
-    /// Import secrets from a .env file
+    /// Import secrets from a .env file or project directory
     Import {
-        /// Path to .env file
+        /// Path to a .env file or project directory
         file: String,
         /// Provider to assign to all imported keys
         #[arg(long)]
         provider: Option<String>,
+        /// Account, organization, or workspace to assign
+        #[arg(long)]
+        account: Option<String>,
         /// Project tag to assign
         #[arg(long)]
         project: Option<String>,
+        /// Source label to assign to imported keys
+        #[arg(long)]
+        source: Option<String>,
         /// Conflict strategy: skip (default), overwrite, rename
         #[arg(long, default_value = "skip")]
         on_conflict: String,
@@ -192,10 +210,43 @@ pub enum Commands {
     /// Check health status of all secrets
     Health,
 
+    /// Mark one or more secrets as verified now
+    Verify {
+        /// Secret name (omit with --all to verify every secret)
+        name: Option<String>,
+        /// Verify all secrets
+        #[arg(long)]
+        all: bool,
+    },
+
     /// Search secrets by keyword: `kf search` to type interactively
     Search {
         /// Search query (omit for interactive prompt)
         query: Option<String>,
+    },
+
+    /// Scan a .env file or project directory for candidate keys before importing
+    Scan {
+        /// Path to a .env file or project directory
+        path: String,
+        /// Import all discovered candidates immediately
+        #[arg(long)]
+        apply: bool,
+        /// Provider to assign to imported keys
+        #[arg(long)]
+        provider: Option<String>,
+        /// Account, organization, or workspace to assign
+        #[arg(long)]
+        account: Option<String>,
+        /// Project tag to assign
+        #[arg(long)]
+        project: Option<String>,
+        /// Source label to assign to imported keys
+        #[arg(long)]
+        source: Option<String>,
+        /// Conflict strategy: skip (default), overwrite, rename
+        #[arg(long, default_value = "skip")]
+        on_conflict: String,
     },
 
     /// Manage key groups (bundles of related secrets)
@@ -235,7 +286,7 @@ pub enum Commands {
         shell: clap_complete::Shell,
     },
 
-    /// Launch interactive TUI
+    /// Launch experimental TUI (low-maintenance terminal view)
     Ui,
 
     /// Open local web dashboard

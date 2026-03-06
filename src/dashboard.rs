@@ -71,12 +71,10 @@ pub fn cmd_dashboard(port: u16) -> Result<()> {
 
         let response = match (method, url.as_str()) {
             (Method::Get, "/") => {
-                let header = Header::from_bytes(
-                    &b"Content-Type"[..],
-                    &b"text/html; charset=utf-8"[..],
-                ).unwrap();
-                Response::from_string(DASHBOARD_HTML)
-                    .with_header(header)
+                let header =
+                    Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
+                        .unwrap();
+                Response::from_string(DASHBOARD_HTML).with_header(header)
             }
             (Method::Get, "/api/stats") => json_response(&handle_stats(&db)),
             (Method::Get, "/api/secrets") => json_response(&handle_secrets(&db)),
@@ -93,10 +91,7 @@ pub fn cmd_dashboard(port: u16) -> Result<()> {
                 let decoded = urldecode(query);
                 json_response(&handle_search(&db, &decoded))
             }
-            _ => {
-                Response::from_string("404 Not Found")
-                    .with_status_code(404)
-            }
+            _ => Response::from_string("404 Not Found").with_status_code(404),
         };
 
         let _ = request.respond(response);
@@ -109,11 +104,9 @@ fn json_response(body: &str) -> Response<std::io::Cursor<Vec<u8>>> {
     let header = Header::from_bytes(
         &b"Content-Type"[..],
         &b"application/json; charset=utf-8"[..],
-    ).unwrap();
-    let cors = Header::from_bytes(
-        &b"Access-Control-Allow-Origin"[..],
-        &b"*"[..],
-    ).unwrap();
+    )
+    .unwrap();
+    let cors = Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap();
     Response::from_string(body)
         .with_header(header)
         .with_header(cors)
@@ -144,7 +137,9 @@ fn secret_to_json(entry: &crate::models::SecretEntry) -> serde_json::Value {
         "name": entry.name,
         "env_var": entry.env_var,
         "provider": entry.provider,
+        "account_name": entry.account_name,
         "description": entry.description,
+        "source": entry.source,
         "scopes": entry.scopes,
         "projects": entry.projects,
         "key_group": entry.key_group,
@@ -152,14 +147,32 @@ fn secret_to_json(entry: &crate::models::SecretEntry) -> serde_json::Value {
         "status": entry.status().to_string(),
         "expires_at": entry.expires_at.map(|d| d.format("%Y-%m-%d").to_string()),
         "last_used_at": entry.last_used_at.map(|d| d.format("%Y-%m-%d").to_string()),
+        "last_verified_at": entry
+            .last_verified_at
+            .map(|d| d.format("%Y-%m-%d").to_string()),
+        "metadata_gaps": entry.metadata_gaps(),
     })
 }
 
 fn handle_stats(db: &Database) -> String {
-    let all = db.list_secrets(&ListFilter { inactive: true, ..Default::default() }).unwrap_or_default();
-    let active = all.iter().filter(|e| matches!(e.status(), crate::models::KeyStatus::Active)).count();
-    let expired = all.iter().filter(|e| matches!(e.status(), crate::models::KeyStatus::Expired)).count();
-    let expiring = all.iter().filter(|e| matches!(e.status(), crate::models::KeyStatus::ExpiringSoon)).count();
+    let all = db
+        .list_secrets(&ListFilter {
+            inactive: true,
+            ..Default::default()
+        })
+        .unwrap_or_default();
+    let active = all
+        .iter()
+        .filter(|e| matches!(e.status(), crate::models::KeyStatus::Active))
+        .count();
+    let expired = all
+        .iter()
+        .filter(|e| matches!(e.status(), crate::models::KeyStatus::Expired))
+        .count();
+    let expiring = all
+        .iter()
+        .filter(|e| matches!(e.status(), crate::models::KeyStatus::ExpiringSoon))
+        .count();
     let groups = db.list_groups().unwrap_or_default().len();
 
     json!({
@@ -168,50 +181,76 @@ fn handle_stats(db: &Database) -> String {
         "expired": expired,
         "expiring_soon": expiring,
         "groups_count": groups,
-    }).to_string()
+    })
+    .to_string()
 }
 
 fn handle_secrets(db: &Database) -> String {
-    let entries = db.list_secrets(&ListFilter { inactive: true, ..Default::default() }).unwrap_or_default();
+    let entries = db
+        .list_secrets(&ListFilter {
+            inactive: true,
+            ..Default::default()
+        })
+        .unwrap_or_default();
     let secrets: Vec<_> = entries.iter().map(secret_to_json).collect();
     json!(secrets).to_string()
 }
 
 fn handle_health(db: &Database) -> String {
-    let entries = db.list_secrets(&ListFilter { inactive: true, ..Default::default() }).unwrap_or_default();
+    let entries = db
+        .list_secrets(&ListFilter {
+            inactive: true,
+            ..Default::default()
+        })
+        .unwrap_or_default();
     let now = chrono::Utc::now();
 
-    let expired: Vec<_> = entries.iter()
+    let expired: Vec<_> = entries
+        .iter()
         .filter(|e| matches!(e.status(), crate::models::KeyStatus::Expired))
-        .map(secret_to_json).collect();
-    let expiring: Vec<_> = entries.iter()
+        .map(secret_to_json)
+        .collect();
+    let expiring: Vec<_> = entries
+        .iter()
         .filter(|e| matches!(e.status(), crate::models::KeyStatus::ExpiringSoon))
-        .map(secret_to_json).collect();
-    let unused: Vec<_> = entries.iter()
-        .filter(|e| {
-            e.is_active && {
-                let last = e.last_used_at.unwrap_or(e.created_at);
-                (now - last).num_days() > 30
-            }
-        })
-        .map(secret_to_json).collect();
+        .map(secret_to_json)
+        .collect();
+    let unused: Vec<_> = entries
+        .iter()
+        .filter(|e| e.is_unused_for_days(now, 30))
+        .map(secret_to_json)
+        .collect();
+    let metadata_review: Vec<_> = entries
+        .iter()
+        .filter(|e| e.is_active && e.has_metadata_gaps())
+        .map(secret_to_json)
+        .collect();
 
     json!({
         "expired": expired,
         "expiring_soon": expiring,
         "unused_30_days": unused,
-    }).to_string()
+        "metadata_review": metadata_review,
+    })
+    .to_string()
 }
 
 fn handle_groups(db: &Database) -> String {
     let entries = db.list_secrets(&ListFilter::default()).unwrap_or_default();
-    let mut groups: std::collections::HashMap<String, Vec<serde_json::Value>> = std::collections::HashMap::new();
+    let mut groups: std::collections::HashMap<String, Vec<serde_json::Value>> =
+        std::collections::HashMap::new();
     for entry in &entries {
         if !entry.key_group.is_empty() {
-            groups.entry(entry.key_group.clone()).or_default().push(secret_to_json(entry));
+            groups
+                .entry(entry.key_group.clone())
+                .or_default()
+                .push(secret_to_json(entry));
         }
     }
-    let result: Vec<_> = groups.into_iter().map(|(g, keys)| json!({"group": g, "keys": keys})).collect();
+    let result: Vec<_> = groups
+        .into_iter()
+        .map(|(g, keys)| json!({"group": g, "keys": keys}))
+        .collect();
     json!(result).to_string()
 }
 

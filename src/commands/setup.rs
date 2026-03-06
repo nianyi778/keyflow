@@ -1,10 +1,9 @@
 use anyhow::{Context, Result};
 use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Cell, Color, Table};
 use console::style;
-use dialoguer::Password;
 use std::fs;
 
-use crate::commands::auth::{open_db, read_session};
+use crate::commands::auth::{get_passphrase, open_db, save_session};
 
 pub fn cmd_serve() -> Result<()> {
     let db = open_db()?;
@@ -158,24 +157,17 @@ pub fn cmd_setup(tool: Option<String>, all: bool, list: bool) -> Result<()> {
         .and_then(|p| p.to_str().map(String::from))
         .unwrap_or_else(|| "kf".to_string());
 
-    let passphrase: String = if let Ok(p) = std::env::var("KEYFLOW_PASSPHRASE") {
-        p
-    } else if let Some(p) = read_session() {
-        p
-    } else {
-        Password::new()
-            .with_prompt("Master passphrase (for MCP config)")
-            .interact()?
-    };
+    let passphrase = get_passphrase()?;
+    let _ = save_session(&passphrase);
 
     if all {
-        return setup_all(&kf_bin, &passphrase);
+        return setup_all(&kf_bin);
     }
 
     if let Some(name) = tool {
         let tool = MCP_TOOLS.iter().find(|t| t.name == name.to_lowercase());
         match tool {
-            Some(t) => setup_tool(t, &kf_bin, &passphrase),
+            Some(t) => setup_tool(t, &kf_bin),
             None => {
                 eprintln!("{} Unknown tool: {}", style("✗").red(), name);
                 eprintln!(
@@ -186,7 +178,7 @@ pub fn cmd_setup(tool: Option<String>, all: bool, list: bool) -> Result<()> {
             }
         }
     } else {
-        setup_interactive(&kf_bin, &passphrase)
+        setup_interactive(&kf_bin)
     }
 }
 
@@ -238,7 +230,7 @@ fn setup_list() -> Result<()> {
     Ok(())
 }
 
-fn setup_interactive(kf_bin: &str, passphrase: &str) -> Result<()> {
+fn setup_interactive(kf_bin: &str) -> Result<()> {
     let detected: Vec<&McpTool> = MCP_TOOLS.iter().filter(|t| t.is_detected()).collect();
 
     if detected.is_empty() {
@@ -281,17 +273,17 @@ fn setup_interactive(kf_bin: &str, passphrase: &str) -> Result<()> {
     }
 
     for &idx in &chosen {
-        setup_tool(detected[idx], kf_bin, passphrase)?;
+        setup_tool(detected[idx], kf_bin)?;
     }
 
     println!(
-        "\n{} Done! Restart your AI tools to pick up the new MCP config.\n",
+        "\n{} Done! Restart your AI tools to pick up the new MCP config.\n  KeyFlow MCP will use your local session file instead of writing the master passphrase into tool configs.\n",
         style("✓").green().bold()
     );
     Ok(())
 }
 
-fn setup_all(kf_bin: &str, passphrase: &str) -> Result<()> {
+fn setup_all(kf_bin: &str) -> Result<()> {
     let detected: Vec<&McpTool> = MCP_TOOLS.iter().filter(|t| t.is_detected()).collect();
 
     if detected.is_empty() {
@@ -300,24 +292,24 @@ fn setup_all(kf_bin: &str, passphrase: &str) -> Result<()> {
     }
 
     for tool in &detected {
-        setup_tool(tool, kf_bin, passphrase)?;
+        setup_tool(tool, kf_bin)?;
     }
 
     println!(
-        "\n{} Configured {} tool(s). Restart them to activate KeyFlow MCP.\n",
+        "\n{} Configured {} tool(s). Restart them to activate KeyFlow MCP.\n  KeyFlow MCP will use your local session file instead of writing the master passphrase into tool configs.\n",
         style("✓").green().bold(),
         detected.len()
     );
     Ok(())
 }
 
-fn setup_tool(tool: &McpTool, kf_bin: &str, passphrase: &str) -> Result<()> {
+fn setup_tool(tool: &McpTool, kf_bin: &str) -> Result<()> {
     let path = tool
         .resolve_path()
         .context("Cannot resolve home directory")?;
 
     if tool.format == ConfigFormat::Toml {
-        return setup_tool_toml(tool, &path, kf_bin, passphrase);
+        return setup_tool_toml(tool, &path, kf_bin);
     }
 
     let mut config: serde_json::Value = if path.exists() {
@@ -329,8 +321,7 @@ fn setup_tool(tool: &McpTool, kf_bin: &str, passphrase: &str) -> Result<()> {
 
     let server_entry = serde_json::json!({
         "command": kf_bin,
-        "args": ["serve"],
-        "env": { "KEYFLOW_PASSPHRASE": passphrase }
+        "args": ["serve"]
     });
 
     if config.get(tool.server_key).is_none() {
@@ -366,12 +357,7 @@ fn setup_tool(tool: &McpTool, kf_bin: &str, passphrase: &str) -> Result<()> {
     Ok(())
 }
 
-fn setup_tool_toml(
-    tool: &McpTool,
-    path: &std::path::Path,
-    kf_bin: &str,
-    passphrase: &str,
-) -> Result<()> {
+fn setup_tool_toml(tool: &McpTool, path: &std::path::Path, kf_bin: &str) -> Result<()> {
     let mut content = if path.exists() {
         fs::read_to_string(path)?
     } else {
@@ -409,7 +395,7 @@ fn setup_tool_toml(
         content.push('\n');
     }
     content.push_str(&format!(
-        "\n[mcp_servers.keyflow]\ncommand = \"{kf_bin}\"\nargs = [\"serve\"]\n\n[mcp_servers.keyflow.env]\nKEYFLOW_PASSPHRASE = \"{passphrase}\"\n"
+        "\n[mcp_servers.keyflow]\ncommand = \"{kf_bin}\"\nargs = [\"serve\"]\n"
     ));
 
     if let Some(parent) = path.parent() {
