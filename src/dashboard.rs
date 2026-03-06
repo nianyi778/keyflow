@@ -21,10 +21,35 @@ fn open_db_for_dashboard() -> Result<Database> {
 pub fn cmd_dashboard(port: u16) -> Result<()> {
     let db = open_db_for_dashboard()?;
 
-    let addr = format!("127.0.0.1:{}", port);
-    let server = Server::http(&addr)
-        .map_err(|e| anyhow::anyhow!("Failed to start server: {}", e))?;
+    let max_attempts = 10;
+    let mut actual_port = port;
+    let server = loop {
+        let addr = format!("127.0.0.1:{}", actual_port);
+        match Server::http(&addr) {
+            Ok(s) => break s,
+            Err(_) if actual_port < port + max_attempts => {
+                actual_port += 1;
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to start server on ports {}-{}: {}",
+                    port,
+                    port + max_attempts,
+                    e
+                ));
+            }
+        }
+    };
+    let addr = format!("127.0.0.1:{}", actual_port);
 
+    if actual_port != port {
+        println!(
+            "  {} Port {} in use, using {} instead.",
+            style("⚠").yellow(),
+            port,
+            style(actual_port).cyan()
+        );
+    }
     println!(
         "\n{} KeyFlow Dashboard running at {}",
         style("✓").green().bold(),
