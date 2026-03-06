@@ -91,6 +91,18 @@ pub fn cmd_dashboard(port: u16) -> Result<()> {
                 let decoded = urldecode(query);
                 json_response(&handle_search(&db, &decoded))
             }
+            (Method::Post, path) if path.starts_with("/api/verify/") => {
+                let name = urldecode(&path["/api/verify/".len()..]);
+                json_response(&handle_verify(&db, &name))
+            }
+            (Method::Post, path) if path.starts_with("/api/inactive/") => {
+                let name = urldecode(&path["/api/inactive/".len()..]);
+                json_response(&handle_mark_inactive(&db, &name))
+            }
+            (Method::Get, path) if path.starts_with("/api/secret/") => {
+                let name = urldecode(&path["/api/secret/".len()..]);
+                json_response(&handle_secret_detail(&db, &name))
+            }
             _ => Response::from_string("404 Not Found").with_status_code(404),
         };
 
@@ -138,8 +150,11 @@ fn secret_to_json(entry: &crate::models::SecretEntry) -> serde_json::Value {
         "env_var": entry.env_var,
         "provider": entry.provider,
         "account_name": entry.account_name,
+        "org_name": entry.org_name,
         "description": entry.description,
         "source": entry.source,
+        "environment": entry.environment,
+        "permission_profile": entry.permission_profile,
         "scopes": entry.scopes,
         "projects": entry.projects,
         "key_group": entry.key_group,
@@ -151,6 +166,7 @@ fn secret_to_json(entry: &crate::models::SecretEntry) -> serde_json::Value {
             .last_verified_at
             .map(|d| d.format("%Y-%m-%d").to_string()),
         "metadata_gaps": entry.metadata_gaps(),
+        "source_quality": entry.source_quality().to_string(),
     })
 }
 
@@ -204,6 +220,7 @@ fn handle_health(db: &Database) -> String {
         })
         .unwrap_or_default();
     let now = chrono::Utc::now();
+    let seven_days_ago = now - chrono::Duration::days(7);
 
     let expired: Vec<_> = entries
         .iter()
@@ -225,12 +242,63 @@ fn handle_health(db: &Database) -> String {
         .filter(|e| e.is_active && e.has_metadata_gaps())
         .map(secret_to_json)
         .collect();
+    let recently_verified: Vec<_> = entries
+        .iter()
+        .filter(|e| {
+            e.last_verified_at
+                .map(|v| v >= seven_days_ago)
+                .unwrap_or(false)
+        })
+        .map(secret_to_json)
+        .collect();
+
+    let duplicates = crate::models::find_duplicate_groups(&entries);
+    let duplicate_groups: Vec<_> = duplicates
+        .iter()
+        .map(|g| json!({"env_var": g.env_var, "names": g.names}))
+        .collect();
+
+    let active_entries: Vec<_> = entries.iter().filter(|e| e.is_active).collect();
+    let mut source_quality: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for e in &active_entries {
+        *source_quality
+            .entry(e.source_quality().to_string())
+            .or_insert(0) += 1;
+    }
+
+    let unverified_30 = active_entries
+        .iter()
+        .filter(|e| {
+            let d = e.unverified_days(now);
+            (30..60).contains(&d)
+        })
+        .count();
+    let unverified_60 = active_entries
+        .iter()
+        .filter(|e| {
+            let d = e.unverified_days(now);
+            (60..90).contains(&d)
+        })
+        .count();
+    let unverified_90 = active_entries
+        .iter()
+        .filter(|e| e.unverified_days(now) >= 90)
+        .count();
 
     json!({
         "expired": expired,
         "expiring_soon": expiring,
         "unused_30_days": unused,
         "metadata_review": metadata_review,
+        "recently_verified": recently_verified,
+        "duplicates": duplicate_groups,
+        "source_quality": source_quality,
+        "unverified": {
+            "30_59_days": unverified_30,
+            "60_89_days": unverified_60,
+            "90_plus_days": unverified_90,
+        },
     })
     .to_string()
 }
@@ -252,6 +320,48 @@ fn handle_groups(db: &Database) -> String {
         .map(|(g, keys)| json!({"group": g, "keys": keys}))
         .collect();
     json!(result).to_string()
+}
+
+fn handle_verify(db: &Database, name: &str) -> String {
+    let now = chrono::Utc::now();
+    match db.update_secret_metadata(
+        name,
+        &crate::db::MetadataUpdate {
+            last_verified_at: Some(Some(now)),
+            ..Default::default()
+        },
+    ) {
+        Ok(_) => json!({
+            "ok": true,
+            "verified_at": now.format("%Y-%m-%d").to_string()
+        })
+        .to_string(),
+        Err(e) => json!({
+            "ok": false,
+            "error": e.to_string()
+        })
+        .to_string(),
+    }
+}
+
+fn handle_mark_inactive(db: &Database, name: &str) -> String {
+    match db.update_secret_metadata(
+        name,
+        &crate::db::MetadataUpdate {
+            is_active: Some(false),
+            ..Default::default()
+        },
+    ) {
+        Ok(_) => json!({"ok": true}).to_string(),
+        Err(e) => json!({"ok": false, "error": e.to_string()}).to_string(),
+    }
+}
+
+fn handle_secret_detail(db: &Database, name: &str) -> String {
+    match db.get_secret(name) {
+        Ok(entry) => secret_to_json(&entry).to_string(),
+        Err(e) => json!({"error": e.to_string()}).to_string(),
+    }
 }
 
 fn handle_search(db: &Database, query: &str) -> String {

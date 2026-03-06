@@ -356,12 +356,16 @@ fn secret_to_metadata(entry: &crate::models::SecretEntry) -> Value {
         "env_var": entry.env_var,
         "provider": entry.provider,
         "account_name": entry.account_name,
+        "org_name": entry.org_name,
         "description": entry.description,
         "source": entry.source,
+        "environment": entry.environment,
+        "permission_profile": entry.permission_profile,
         "last_verified_at": entry
             .last_verified_at
             .map(|d| d.format("%Y-%m-%d").to_string()),
         "metadata_gaps": entry.metadata_gaps(),
+        "source_quality": entry.source_quality().to_string(),
         "scopes": entry.scopes,
         "projects": entry.projects,
         "key_group": entry.key_group,
@@ -466,12 +470,53 @@ fn tool_check_health(db: &Database) -> Result<Value> {
         }
     }
 
+    let duplicates = crate::models::find_duplicate_groups(&entries);
+    let duplicate_groups: Vec<Value> = duplicates
+        .iter()
+        .map(|g| json!({"env_var": g.env_var, "names": g.names}))
+        .collect();
+
+    let active_entries: Vec<_> = entries.iter().filter(|e| e.is_active).collect();
+    let mut source_quality: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for e in &active_entries {
+        *source_quality
+            .entry(e.source_quality().to_string())
+            .or_insert(0) += 1;
+    }
+
+    let unverified_30 = active_entries
+        .iter()
+        .filter(|e| {
+            let d = e.unverified_days(now);
+            (30..60).contains(&d)
+        })
+        .count();
+    let unverified_60 = active_entries
+        .iter()
+        .filter(|e| {
+            let d = e.unverified_days(now);
+            (60..90).contains(&d)
+        })
+        .count();
+    let unverified_90 = active_entries
+        .iter()
+        .filter(|e| e.unverified_days(now) >= 90)
+        .count();
+
     Ok(json!({
         "expired": { "count": expired.len(), "keys": expired },
         "expiring_soon": { "count": expiring_soon.len(), "keys": expiring_soon },
         "unused_30_days": { "count": unused_30d.len(), "keys": unused_30d },
         "inactive": { "count": inactive.len(), "keys": inactive },
         "metadata_review": { "count": metadata_review.len(), "keys": metadata_review },
+        "duplicates": { "count": duplicate_groups.len(), "groups": duplicate_groups },
+        "source_quality": source_quality,
+        "unverified": {
+            "30_59_days": unverified_30,
+            "60_89_days": unverified_60,
+            "90_plus_days": unverified_90,
+        },
     }))
 }
 
@@ -813,8 +858,11 @@ fn tool_add_key(db: &Database, args: &Value) -> Result<Value> {
         env_var: env_var.to_string(),
         provider: provider.clone(),
         account_name: account_name.to_string(),
+        org_name: String::new(),
         description: description.to_string(),
         source: source.to_string(),
+        environment: String::new(),
+        permission_profile: String::new(),
         scopes: Vec::new(),
         projects,
         apply_url: String::new(),

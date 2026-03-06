@@ -58,6 +58,9 @@ pub enum Commands {
         /// Account, organization, or workspace name for this key
         #[arg(long)]
         account: Option<String>,
+        /// Organization name (e.g. acme-corp)
+        #[arg(long)]
+        org: Option<String>,
         /// Project tags (comma-separated)
         #[arg(short = 'P', long)]
         projects: Option<String>,
@@ -73,6 +76,12 @@ pub enum Commands {
         /// Expiry date (YYYY-MM-DD)
         #[arg(short, long)]
         expires: Option<String>,
+        /// Environment: prod, staging, or dev
+        #[arg(long)]
+        environment: Option<String>,
+        /// Permission or scope profile (e.g. read-only, admin, deploy)
+        #[arg(long)]
+        permission: Option<String>,
         /// Read value from clipboard (macOS: pbpaste)
         #[arg(long)]
         paste: bool,
@@ -131,6 +140,9 @@ pub enum Commands {
         /// New account, organization, or workspace name
         #[arg(long)]
         account: Option<String>,
+        /// Organization name
+        #[arg(long)]
+        org: Option<String>,
         /// New description
         #[arg(long)]
         desc: Option<String>,
@@ -149,12 +161,21 @@ pub enum Commands {
         /// New expiry date (YYYY-MM-DD)
         #[arg(long)]
         expires: Option<String>,
+        /// Environment: prod, staging, or dev
+        #[arg(long)]
+        environment: Option<String>,
+        /// Permission or scope profile
+        #[arg(long)]
+        permission: Option<String>,
         /// Toggle active/inactive
         #[arg(long)]
         active: Option<bool>,
         /// Set key group
         #[arg(long)]
         group: Option<String>,
+        /// Mark this key as verified now (updates last_verified_at)
+        #[arg(long)]
+        verify: bool,
     },
 
     /// Run a command with secrets injected: `kf run -- npm start`
@@ -232,6 +253,18 @@ pub enum Commands {
         /// Import all discovered candidates immediately
         #[arg(long)]
         apply: bool,
+        /// Recursively scan subdirectories
+        #[arg(long, short)]
+        recursive: bool,
+        /// Only show candidates not already in vault
+        #[arg(long)]
+        new: bool,
+        /// Skip common non-secret variables (PATH, HOME, NODE_ENV, etc.)
+        #[arg(long)]
+        skip_common: bool,
+        /// Export candidate list to a file instead of printing
+        #[arg(long)]
+        export: Option<String>,
         /// Provider to assign to imported keys
         #[arg(long)]
         provider: Option<String>,

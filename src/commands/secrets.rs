@@ -18,11 +18,14 @@ pub struct AddArgs {
     pub value: Option<String>,
     pub provider: Option<String>,
     pub account: Option<String>,
+    pub org: Option<String>,
     pub projects: Option<String>,
     pub group: Option<String>,
     pub desc: Option<String>,
     pub source: Option<String>,
     pub expires: Option<String>,
+    pub environment: Option<String>,
+    pub permission: Option<String>,
     pub paste: bool,
 }
 
@@ -31,14 +34,18 @@ pub struct UpdateArgs {
     pub value: Option<String>,
     pub provider: Option<String>,
     pub account: Option<String>,
+    pub org: Option<String>,
     pub desc: Option<String>,
     pub source: Option<String>,
+    pub environment: Option<String>,
+    pub permission: Option<String>,
     pub scopes: Option<String>,
     pub projects: Option<String>,
     pub url: Option<String>,
     pub expires: Option<String>,
     pub active: Option<bool>,
     pub group: Option<String>,
+    pub verify: bool,
 }
 
 #[derive(Clone)]
@@ -63,6 +70,14 @@ struct ImportStats {
 }
 
 fn collect_import_sources(path: &Path) -> Result<Vec<ImportSource>> {
+    collect_import_sources_inner(path, false)
+}
+
+fn collect_import_sources_recursive(path: &Path) -> Result<Vec<ImportSource>> {
+    collect_import_sources_inner(path, true)
+}
+
+fn collect_import_sources_inner(path: &Path, recursive: bool) -> Result<Vec<ImportSource>> {
     if path.is_file() {
         return Ok(vec![ImportSource {
             path: path.to_path_buf(),
@@ -75,36 +90,58 @@ fn collect_import_sources(path: &Path) -> Result<Vec<ImportSource>> {
     }
 
     let mut files = Vec::new();
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let candidate = entry.path();
-        if !candidate.is_file() {
-            continue;
+
+    if recursive {
+        for entry in walkdir::WalkDir::new(path)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| {
+                let name = e.file_name().to_str().unwrap_or("");
+                !name.starts_with('.') || name.starts_with(".env") || e.depth() == 0
+            })
+        {
+            let entry = entry?;
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let candidate = entry.path();
+            let Some(name) = candidate.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if name == ".env" || name.starts_with(".env.") || name.ends_with(".env") {
+                let project_name = candidate.parent().and_then(detect_project_name_in_dir);
+                files.push(ImportSource {
+                    path: candidate.to_path_buf(),
+                    project_name,
+                });
+            }
         }
-
-        let Some(name) = candidate.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-
-        if name == ".env" || name.starts_with(".env.") || name.ends_with(".env") {
-            files.push(candidate);
+    } else {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let candidate = entry.path();
+            if !candidate.is_file() {
+                continue;
+            }
+            let Some(name) = candidate.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if name == ".env" || name.starts_with(".env.") || name.ends_with(".env") {
+                files.push(ImportSource {
+                    path: candidate,
+                    project_name: detect_project_name_in_dir(path),
+                });
+            }
         }
     }
 
-    files.sort();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
 
     if files.is_empty() {
-        bail!("No .env files found in directory '{}'", path.display());
+        bail!("No .env files found in '{}'", path.display());
     }
 
-    let project_name = detect_project_name_in_dir(path);
-    Ok(files
-        .into_iter()
-        .map(|path| ImportSource {
-            path,
-            project_name: project_name.clone(),
-        })
-        .collect())
+    Ok(files)
 }
 
 fn import_env_file(
@@ -166,6 +203,9 @@ fn import_env_file(
                                 last_verified_at: Some(Some(Utc::now())),
                                 is_active: Some(true),
                                 key_group: None,
+                                org_name: None,
+                                environment: None,
+                                permission_profile: None,
                             },
                         )?;
                         println!(
@@ -199,8 +239,11 @@ fn import_env_file(
                 env_var: key.to_string(),
                 provider: provider.to_string(),
                 account_name: account_name.to_string(),
+                org_name: String::new(),
                 description: format!("Imported from {}", path.display()),
                 source: source_label.clone(),
+                environment: String::new(),
+                permission_profile: String::new(),
                 scopes: vec![],
                 projects: projects.to_vec(),
                 apply_url: String::new(),
@@ -228,9 +271,23 @@ fn import_env_file(
     Ok(stats)
 }
 
-fn collect_scan_candidates(path: &Path) -> Result<Vec<ScanCandidate>> {
+fn collect_scan_candidates(
+    path: &Path,
+    recursive: bool,
+    skip_common: bool,
+    new_only: bool,
+    db: Option<&crate::db::Database>,
+) -> Result<Vec<ScanCandidate>> {
+    use crate::commands::helpers::SKIP_VARS;
+
+    let sources = if recursive {
+        collect_import_sources_recursive(path)?
+    } else {
+        collect_import_sources(path)?
+    };
+
     let mut candidates = Vec::new();
-    for source in collect_import_sources(path)? {
+    for source in sources {
         let content = fs::read_to_string(&source.path)?;
         for line in content.lines() {
             let line = line.trim();
@@ -241,6 +298,17 @@ fn collect_scan_candidates(path: &Path) -> Result<Vec<ScanCandidate>> {
                 let env_var = key.trim();
                 if env_var.is_empty() {
                     continue;
+                }
+                if skip_common && SKIP_VARS.contains(&env_var.to_uppercase().as_str()) {
+                    continue;
+                }
+                if new_only {
+                    if let Some(db) = db {
+                        let name = env_var.to_lowercase().replace('_', "-");
+                        if db.secret_exists(&name).unwrap_or(false) {
+                            continue;
+                        }
+                    }
                 }
                 candidates.push(ScanCandidate {
                     env_var: env_var.to_string(),
@@ -260,11 +328,14 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
         value,
         provider,
         account,
+        org,
         projects,
         group,
         desc,
         source,
         expires,
+        environment,
+        permission,
         paste,
     } = args;
     let db = open_db()?;
@@ -359,6 +430,9 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
 
     let description = desc.unwrap_or_default();
     let account_name = account.unwrap_or_default();
+    let org_name = org.unwrap_or_default();
+    let environment_val = environment.unwrap_or_default();
+    let permission_profile = permission.unwrap_or_default();
     let key_group = group.unwrap_or_default();
     let source = source.unwrap_or_else(|| "manual".to_string());
     let apply_url = get_default_url(&provider);
@@ -374,8 +448,11 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
         env_var,
         provider,
         account_name,
+        org_name,
         description,
         source,
+        environment: environment_val,
+        permission_profile,
         scopes: vec![],
         projects: projects_vec,
         apply_url,
@@ -562,14 +639,18 @@ pub fn cmd_update(args: UpdateArgs) -> Result<()> {
         value,
         provider,
         account,
+        org,
         desc,
         source,
+        environment,
+        permission,
         scopes,
         projects,
         url,
         expires,
         active,
         group,
+        verify,
     } = args;
     let db = open_db()?;
     let name = match name {
@@ -599,28 +680,41 @@ pub fn cmd_update(args: UpdateArgs) -> Result<()> {
         None => None,
     };
 
+    let last_verified_at = if verify { Some(Some(Utc::now())) } else { None };
+
     db.update_secret_metadata(
         &name,
         &crate::db::MetadataUpdate {
             provider: provider.as_deref(),
             account_name: account.as_deref(),
+            org_name: org.as_deref(),
             description: desc.as_deref(),
             source: source.as_deref(),
+            environment: environment.as_deref(),
+            permission_profile: permission.as_deref(),
             scopes: scopes_vec.as_deref(),
             projects: projects_vec.as_deref(),
             apply_url: url.as_deref(),
             expires_at,
-            last_verified_at: None,
+            last_verified_at,
             is_active: active,
             key_group: group.as_deref(),
         },
     )?;
 
-    println!(
-        "{} Metadata updated for '{}'",
-        style("✓").green().bold(),
-        name
-    );
+    if verify {
+        println!(
+            "{} Verified and metadata updated for '{}'",
+            style("✓").green().bold(),
+            name
+        );
+    } else {
+        println!(
+            "{} Metadata updated for '{}'",
+            style("✓").green().bold(),
+            name
+        );
+    }
     Ok(())
 }
 
@@ -780,6 +874,8 @@ pub fn cmd_export(
 }
 
 pub fn cmd_health() -> Result<()> {
+    use crate::models::find_duplicate_groups;
+
     let db = open_db()?;
     let entries = db.list_secrets(&ListFilter {
         inactive: true,
@@ -843,6 +939,135 @@ pub fn cmd_health() -> Result<()> {
         }
     }
 
+    let duplicates = find_duplicate_groups(&entries);
+    if !duplicates.is_empty() {
+        issues += duplicates.len();
+        println!(
+            "\n{} {} Duplicate / Overlapping Key Groups:",
+            style("⚠").yellow().bold(),
+            duplicates.len()
+        );
+        for group in &duplicates {
+            println!(
+                "  {} {} → {}",
+                style("•").yellow(),
+                style(&group.env_var).yellow(),
+                group
+                    .names
+                    .iter()
+                    .map(|n| style(n).cyan().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+
+    let mut provider_old_keys: std::collections::HashMap<&str, Vec<&SecretEntry>> =
+        std::collections::HashMap::new();
+    for e in &entries {
+        if e.is_active && !e.provider.is_empty() && e.is_unused_for_days(now, 60) {
+            provider_old_keys.entry(&e.provider).or_default().push(e);
+        }
+    }
+    let multi_old: Vec<_> = provider_old_keys
+        .iter()
+        .filter(|(_, keys)| keys.len() > 1)
+        .collect();
+    if !multi_old.is_empty() {
+        println!(
+            "\n{} Same Provider, Multiple Old Keys:",
+            style("⚠").yellow().bold()
+        );
+        for (provider, keys) in &multi_old {
+            println!(
+                "  {} {} ({} keys unused 60+ days): {}",
+                style("•").yellow(),
+                style(provider).cyan(),
+                keys.len(),
+                keys.iter()
+                    .map(|k| k.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+
+    let active_entries: Vec<_> = entries.iter().filter(|e| e.is_active).collect();
+    let mut quality_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for e in &active_entries {
+        *quality_counts
+            .entry(e.source_quality().to_string())
+            .or_insert(0) += 1;
+    }
+    if !quality_counts.is_empty() {
+        println!("\n{} Source Quality Breakdown:", style("ℹ").blue().bold());
+        let order = ["template", "import", "manual", "mcp", "other", "unknown"];
+        for tier in &order {
+            if let Some(count) = quality_counts.get(*tier) {
+                println!("  {} {}: {}", style("•").dim(), tier, count);
+            }
+        }
+    }
+
+    let unverified_30: Vec<_> = active_entries
+        .iter()
+        .filter(|e| {
+            let days = e.unverified_days(now);
+            (30..60).contains(&days)
+        })
+        .collect();
+    let unverified_60: Vec<_> = active_entries
+        .iter()
+        .filter(|e| {
+            let days = e.unverified_days(now);
+            (60..90).contains(&days)
+        })
+        .collect();
+    let unverified_90: Vec<_> = active_entries
+        .iter()
+        .filter(|e| e.unverified_days(now) >= 90)
+        .collect();
+    if !unverified_30.is_empty() || !unverified_60.is_empty() || !unverified_90.is_empty() {
+        println!("\n{} Unverified Keys:", style("!").yellow().bold());
+        if !unverified_90.is_empty() {
+            println!(
+                "  {} 90+ days ({}): {}",
+                style("•").red(),
+                unverified_90.len(),
+                unverified_90
+                    .iter()
+                    .map(|e| e.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        if !unverified_60.is_empty() {
+            println!(
+                "  {} 60-89 days ({}): {}",
+                style("•").yellow(),
+                unverified_60.len(),
+                unverified_60
+                    .iter()
+                    .map(|e| e.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        if !unverified_30.is_empty() {
+            println!(
+                "  {} 30-59 days ({}): {}",
+                style("•").dim(),
+                unverified_30.len(),
+                unverified_30
+                    .iter()
+                    .map(|e| e.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+
     let unused: Vec<_> = entries
         .iter()
         .filter(|e| e.is_unused_for_days(now, 30))
@@ -901,9 +1126,10 @@ pub fn cmd_health() -> Result<()> {
         );
     } else {
         println!(
-            "\nTotal: {} secrets, {} expiry issues, {} review items",
+            "\nTotal: {} secrets, {} expiry issues, {} duplicates, {} review items",
             entries.len(),
-            issues,
+            issues - duplicates.len(),
+            duplicates.len(),
             inactive.len() + unused.len() + metadata_gaps.len()
         );
     }
@@ -1014,9 +1240,14 @@ pub fn cmd_search(query: Option<String>) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn cmd_scan(
     path: &str,
     apply: bool,
+    recursive: bool,
+    new_only: bool,
+    skip_common: bool,
+    export: Option<String>,
     provider: Option<String>,
     account: Option<String>,
     project: Option<String>,
@@ -1028,9 +1259,49 @@ pub fn cmd_scan(
         bail!("Path not found: {}", path);
     }
 
-    let candidates = collect_scan_candidates(scan_path)?;
+    let db = if new_only { Some(open_db()?) } else { None };
+    let candidates =
+        collect_scan_candidates(scan_path, recursive, skip_common, new_only, db.as_ref())?;
     if candidates.is_empty() {
         println!("{}", style("No candidate keys found.").dim());
+        return Ok(());
+    }
+
+    if let Some(ref export_path) = export {
+        let data: Vec<serde_json::Value> = candidates
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "env_var": c.env_var,
+                    "provider": c.provider,
+                    "file": c.file.display().to_string(),
+                    "project": c.project_name,
+                })
+            })
+            .collect();
+
+        if export_path.ends_with(".csv") {
+            let mut lines = vec!["env_var,provider,file,project".to_string()];
+            for c in &candidates {
+                lines.push(format!(
+                    "{},{},{},{}",
+                    c.env_var,
+                    c.provider,
+                    c.file.display(),
+                    c.project_name.as_deref().unwrap_or("")
+                ));
+            }
+            fs::write(export_path, lines.join("\n") + "\n")?;
+        } else {
+            fs::write(export_path, serde_json::to_string_pretty(&data)?)?;
+        }
+
+        println!(
+            "{} Exported {} candidates to {}",
+            style("✓").green().bold(),
+            candidates.len(),
+            style(export_path).cyan()
+        );
         return Ok(());
     }
 
@@ -1226,8 +1497,11 @@ pub fn cmd_template_use(
             env_var,
             provider: template.provider.to_string(),
             account_name: String::new(),
+            org_name: String::new(),
             description: tkey.description.to_string(),
             source: format!("template:{}", template.name),
+            environment: String::new(),
+            permission_profile: String::new(),
             scopes: vec![],
             projects: projects_vec.clone(),
             apply_url: template.apply_url.to_string(),

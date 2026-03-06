@@ -18,8 +18,22 @@ fn session_path() -> Result<std::path::PathBuf> {
     Ok(get_data_dir()?.join(".session"))
 }
 
+const SESSION_MAX_AGE_SECS: u64 = 24 * 60 * 60;
+
 pub(crate) fn read_session() -> Option<String> {
     let path = session_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let metadata = fs::metadata(&path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let age = std::time::SystemTime::now()
+        .duration_since(modified)
+        .unwrap_or_default();
+    if age.as_secs() > SESSION_MAX_AGE_SECS {
+        let _ = fs::remove_file(&path);
+        return None;
+    }
     fs::read_to_string(&path)
         .ok()
         .map(|s| s.trim().to_string())

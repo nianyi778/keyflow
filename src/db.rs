@@ -9,8 +9,11 @@ use crate::models::{ListFilter, SecretEntry};
 pub struct MetadataUpdate<'a> {
     pub provider: Option<&'a str>,
     pub account_name: Option<&'a str>,
+    pub org_name: Option<&'a str>,
     pub description: Option<&'a str>,
     pub source: Option<&'a str>,
+    pub environment: Option<&'a str>,
+    pub permission_profile: Option<&'a str>,
     pub scopes: Option<&'a [String]>,
     pub projects: Option<&'a [String]>,
     pub apply_url: Option<&'a str>,
@@ -53,7 +56,10 @@ impl Database {
                 updated_at TEXT NOT NULL,
                 last_used_at TEXT,
                 last_verified_at TEXT,
-                is_active INTEGER NOT NULL DEFAULT 1
+                is_active INTEGER NOT NULL DEFAULT 1,
+                org_name TEXT NOT NULL DEFAULT '',
+                environment TEXT NOT NULL DEFAULT '',
+                permission_profile TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_secrets_env_var ON secrets(env_var);
             CREATE INDEX IF NOT EXISTS idx_secrets_provider ON secrets(provider);
@@ -80,6 +86,9 @@ impl Database {
         self.add_column_if_missing("account_name", "TEXT NOT NULL DEFAULT ''")?;
         self.add_column_if_missing("source", "TEXT NOT NULL DEFAULT ''")?;
         self.add_column_if_missing("last_verified_at", "TEXT")?;
+        self.add_column_if_missing("org_name", "TEXT NOT NULL DEFAULT ''")?;
+        self.add_column_if_missing("environment", "TEXT NOT NULL DEFAULT ''")?;
+        self.add_column_if_missing("permission_profile", "TEXT NOT NULL DEFAULT ''")?;
         Ok(())
     }
 
@@ -103,8 +112,8 @@ impl Database {
         let projects_json = serde_json::to_string(&entry.projects)?;
 
         self.conn.execute(
-            "INSERT INTO secrets (id, name, env_var, encrypted_value, provider, account_name, description, source, scopes, projects, apply_url, expires_at, created_at, updated_at, last_verified_at, is_active, key_group)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            "INSERT INTO secrets (id, name, env_var, encrypted_value, provider, account_name, description, source, scopes, projects, apply_url, expires_at, created_at, updated_at, last_verified_at, is_active, key_group, org_name, environment, permission_profile)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 entry.id,
                 entry.name,
@@ -123,6 +132,9 @@ impl Database {
                 entry.last_verified_at.map(|d| d.to_rfc3339()),
                 entry.is_active,
                 entry.key_group,
+                entry.org_name,
+                entry.environment,
+                entry.permission_profile,
             ],
         )?;
         Ok(())
@@ -130,7 +142,7 @@ impl Database {
 
     pub fn list_secrets(&self, filter: &ListFilter) -> Result<Vec<SecretEntry>> {
         let mut sql = String::from(
-            "SELECT id, name, env_var, provider, account_name, description, source, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, last_verified_at, is_active, key_group FROM secrets WHERE 1=1",
+            "SELECT id, name, env_var, provider, account_name, description, source, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, last_verified_at, is_active, key_group, org_name, environment, permission_profile FROM secrets WHERE 1=1",
         );
         let mut bind_values: Vec<String> = Vec::new();
 
@@ -178,7 +190,7 @@ impl Database {
 
     pub fn get_secret(&self, name: &str) -> Result<SecretEntry> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, env_var, provider, account_name, description, source, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, last_verified_at, is_active, key_group FROM secrets WHERE name = ?1",
+            "SELECT id, name, env_var, provider, account_name, description, source, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, last_verified_at, is_active, key_group, org_name, environment, permission_profile FROM secrets WHERE name = ?1",
         )?;
         let entry = stmt
             .query_row(params![name], |row| Ok(self.row_to_entry(row)))
@@ -225,8 +237,11 @@ impl Database {
         let MetadataUpdate {
             provider,
             account_name,
+            org_name,
             description,
             source,
+            environment,
+            permission_profile,
             scopes,
             projects,
             apply_url,
@@ -295,6 +310,21 @@ impl Database {
             updates.push(format!("key_group = ?{}", bind_idx));
             bind_idx += 1;
         }
+        if let Some(o) = org_name {
+            bind_values.push(o.to_string());
+            updates.push(format!("org_name = ?{}", bind_idx));
+            bind_idx += 1;
+        }
+        if let Some(e) = environment {
+            bind_values.push(e.to_string());
+            updates.push(format!("environment = ?{}", bind_idx));
+            bind_idx += 1;
+        }
+        if let Some(pp) = permission_profile {
+            bind_values.push(pp.to_string());
+            updates.push(format!("permission_profile = ?{}", bind_idx));
+            bind_idx += 1;
+        }
 
         let _ = bind_idx;
         bind_values.push(name.to_string());
@@ -315,9 +345,9 @@ impl Database {
     pub fn search_secrets(&self, query: &str) -> Result<Vec<SecretEntry>> {
         let pattern = format!("%{}%", query);
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, env_var, provider, account_name, description, source, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, last_verified_at, is_active, key_group
+            "SELECT id, name, env_var, provider, account_name, description, source, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, last_verified_at, is_active, key_group, org_name, environment, permission_profile
              FROM secrets
-             WHERE name LIKE ?1 OR env_var LIKE ?1 OR provider LIKE ?1 OR account_name LIKE ?1 OR description LIKE ?1 OR source LIKE ?1 OR scopes LIKE ?1 OR projects LIKE ?1 OR key_group LIKE ?1
+             WHERE name LIKE ?1 OR env_var LIKE ?1 OR provider LIKE ?1 OR account_name LIKE ?1 OR description LIKE ?1 OR source LIKE ?1 OR scopes LIKE ?1 OR projects LIKE ?1 OR key_group LIKE ?1 OR org_name LIKE ?1
              ORDER BY name",
         )?;
         let rows = stmt.query_map(params![pattern], |row| Ok(self.row_to_entry(row)))?;
@@ -446,6 +476,9 @@ impl Database {
             }),
             is_active: row.get(15)?,
             key_group: row.get(16)?,
+            org_name: row.get(17)?,
+            environment: row.get(18)?,
+            permission_profile: row.get(19)?,
         })
     }
 }

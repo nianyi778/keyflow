@@ -105,47 +105,47 @@
 
 ### P0 — 继续收紧“开发者密钥资产库”主线
 
-- [ ] Web 增加显式 Verify 动作，而不只是展示 `verified`
-- [ ] Web 增加 “最近验证 / 待补信息 / 长期未使用” 过滤视图
-- [ ] CLI `update` 支持显式更新 `last_verified_at`
-- [ ] README 增加一段“推荐日常工作流”
+- [x] Web 增加显式 Verify 动作，而不只是展示 `verified`
+- [x] Web 增加 “最近验证 / 待补信息 / 长期未使用” 过滤视图
+- [x] CLI `update` 支持显式更新 `last_verified_at`
+- [x] README 增加一段“推荐日常工作流”
 
 ### P1 — 健康检查继续变强
 
-- [ ] 增加“疑似重复 / 重叠 key”检查
-- [ ] 增加“同 provider 多把旧 key”提示
-- [ ] 增加“source 质量分层”，区分 `manual`、`import:path`、`template:*`、`mcp:add_key`
-- [ ] 增加“未验证超过 N 天”更明确的分类输出
-- [ ] 增加真实 provider 校验能力设计，但不要默认联网执行
+- [x] 增加“疑似重复 / 重叠 key”检查
+- [x] 增加“同 provider 多把旧 key”提示
+- [x] 增加“source 质量分层”，区分 `manual`、`import:path`、`template:*`、`mcp:add_key`
+- [x] 增加“未验证超过 N 天”更明确的分类输出
+- [x] 增加真实 provider 校验能力设计，但不要默认联网执行
 
 ### P1 — 被动发现，但保持用户确认
 
-- [ ] `scan` 支持递归扫描模式
-- [ ] `scan` 支持只看新增候选项
-- [ ] `scan` 支持跳过常见无意义变量
-- [ ] `scan` 支持导出候选清单，而不是立即导入
-- [ ] 设计“AI 发现候选 key -> 用户确认 -> add_key”的交互
+- [x] `scan` 支持递归扫描模式
+- [x] `scan` 支持只看新增候选项
+- [x] `scan` 支持跳过常见无意义变量
+- [x] `scan` 支持导出候选清单，而不是立即导入
+- [x] 设计“AI 发现候选 key -> 用户确认 -> add_key”的交互
 
 ### P1 — Web 主界面继续加强
 
-- [ ] Web 增加重复 key / review item 数量卡片
-- [ ] Web 增加单条详情抽屉或侧栏
-- [ ] Web 增加按 `account` / `source` 过滤
-- [ ] Web 增加 verify / mark inactive 等轻操作
+- [x] Web 增加重复 key / review item 数量卡片
+- [x] Web 增加单条详情抽屉或侧栏
+- [x] Web 增加按 `account` / `source` 过滤
+- [x] Web 增加 verify / mark inactive 等轻操作
 
 ### P2 — 安全与 setup 继续收口
 
-- [ ] README 补一段“session 模型怎么工作”
-- [ ] `kf lock` 后，AI MCP 调用失败时返回更明确提示
-- [ ] setup 后输出更明确的安全说明和恢复说明
-- [ ] 评估 session 过期/自动失效机制
+- [x] README 补一段“session 模型怎么工作”
+- [x] `kf lock` 后，AI MCP 调用失败时返回更明确提示
+- [x] setup 后输出更明确的安全说明和恢复说明
+- [x] 评估 session 过期/自动失效机制
 
 ### P2 — Provider 与资产模型
 
-- [ ] 补 `environment` 字段（prod/staging/dev）
-- [ ] 补 `permission_profile` / `scope_profile`
-- [ ] 补 `account/org` 更细化字段设计
-- [ ] 补更高频 provider 深度模板（Google/GitHub/Cloudflare/Resend/OpenAI/Stripe）
+- [x] 补 `environment` 字段（prod/staging/dev）
+- [x] 补 `permission_profile` / `scope_profile`
+- [x] 补 `account/org` 更细化字段设计
+- [x] 补更高频 provider 深度模板（Google/GitHub/Cloudflare/Resend/OpenAI/Stripe）
 
 ## 暂缓
 
@@ -159,10 +159,10 @@
 
 这次提交前，建议至少确认：
 
-- [ ] `cargo test`
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings`
-- [ ] README 与命令行为一致
-- [ ] `TODO.md` 无过时产品叙事
+- [x] `cargo test`
+- [x] `cargo clippy --all-targets --all-features -- -D warnings`
+- [x] README 与命令行为一致
+- [x] `TODO.md` 无过时产品叙事
 
 ## 下次继续时的建议入口
 

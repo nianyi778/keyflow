@@ -230,6 +230,44 @@ kf setup
 
 ---
 
+## 推荐日常工作流
+
+跑顺之后，日常使用大概就是这几件事：
+
+**开发时**
+```bash
+kf run --project myapp -- npm start
+kf search resend
+kf get resend-api-key --copy
+```
+
+**申请了新 key**
+```bash
+kf add NEWRELIC_API_KEY xxx --provider newrelic --projects myapp --account acme
+```
+
+**接手新项目或切换项目**
+```bash
+kf scan ./new-project
+kf import ./new-project --account acme-labs
+```
+
+**定期整理（建议每周或每月一次）**
+```bash
+kf health
+kf verify --all
+kf list --expiring
+```
+
+**导出 `.env` 给同事或部署**
+```bash
+kf export --project myapp -o .env
+```
+
+核心原则：**先存、再搜、再复用**。存的时候打好 `provider` / `projects` / `account` 标签，后面搜索和导出就很顺。
+
+---
+
 ## 用户怎么存 key
 
 ### 方式一：手动添加
@@ -492,6 +530,27 @@ kf template use google-oauth --projects myapp --expires 2027-01-15
 - `kf setup` 现在优先依赖本地 session，不再把主密码写进 AI 工具配置文件
 - `kf run` 通过运行时注入环境变量，避免把明文长期落盘
 - `kf web` 只监听 `127.0.0.1`
+
+### Session 模型怎么工作
+
+KeyFlow 使用本地 session 文件来避免重复输入主密码：
+
+1. 首次运行任何 kf 命令时，输入主密码后会创建 `~/.keyflow/.session`
+2. 后续命令自动读取 session，无需再次输入密码
+3. Session 文件权限为 `0600`，仅当前用户可读
+4. Session 24 小时后自动过期，过期后需要重新输入密码
+5. 运行 `kf lock` 可以立即清除 session
+
+为什么这样设计：
+- `kf setup` 不再把主密码写进 AI 工具的配置文件
+- 配置文件泄漏时，不会带出一份可用密码
+- AI 工具（MCP）和 CLI 共用同一套 session
+- 如果 session 过期或不存在，`kf serve` 会返回明确的错误信息
+
+恢复建议：
+- 定期运行 `kf backup` 创建加密备份
+- 备份文件使用创建时的密码加密，丢失密码无法恢复
+- 备份文件包含独立的 salt，不依赖当前 vault 配置
 
 ---
 

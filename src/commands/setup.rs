@@ -6,8 +6,18 @@ use std::fs;
 use crate::commands::auth::{get_passphrase, open_db, save_session};
 
 pub fn cmd_serve() -> Result<()> {
-    let db = open_db()?;
-    crate::mcp::serve(&db)
+    match open_db() {
+        Ok(db) => crate::mcp::serve(&db),
+        Err(e) => {
+            let msg = format!(
+                "KeyFlow vault is locked or not initialized.\n\
+                 Run `kf init` to initialize, or unlock with any kf command first.\n\
+                 Original error: {}",
+                e
+            );
+            anyhow::bail!("{}", msg);
+        }
+    }
 }
 
 struct McpTool {
@@ -230,6 +240,32 @@ fn setup_list() -> Result<()> {
     Ok(())
 }
 
+fn print_security_notes() {
+    println!("\n{}", style("  Security Notes").bold());
+    println!(
+        "  {} Your master passphrase is NOT stored in any AI tool config.",
+        style("•").dim()
+    );
+    println!(
+        "  {} Session expires after 24 hours. Run any kf command to refresh.",
+        style("•").dim()
+    );
+    println!(
+        "  {} Run {} to immediately revoke session.",
+        style("•").dim(),
+        style("kf lock").cyan()
+    );
+    println!(
+        "  {} Run {} to create an encrypted backup.",
+        style("•").dim(),
+        style("kf backup").cyan()
+    );
+    println!(
+        "  {} If you lose your passphrase, there is no recovery. Keep a backup.\n",
+        style("•").dim()
+    );
+}
+
 fn setup_interactive(kf_bin: &str) -> Result<()> {
     let detected: Vec<&McpTool> = MCP_TOOLS.iter().filter(|t| t.is_detected()).collect();
 
@@ -277,9 +313,10 @@ fn setup_interactive(kf_bin: &str) -> Result<()> {
     }
 
     println!(
-        "\n{} Done! Restart your AI tools to pick up the new MCP config.\n  KeyFlow MCP will use your local session file instead of writing the master passphrase into tool configs.\n",
+        "\n{} Done! Restart your AI tools to pick up the new MCP config.",
         style("✓").green().bold()
     );
+    print_security_notes();
     Ok(())
 }
 
@@ -296,10 +333,11 @@ fn setup_all(kf_bin: &str) -> Result<()> {
     }
 
     println!(
-        "\n{} Configured {} tool(s). Restart them to activate KeyFlow MCP.\n  KeyFlow MCP will use your local session file instead of writing the master passphrase into tool configs.\n",
+        "\n{} Configured {} tool(s). Restart them to activate KeyFlow MCP.",
         style("✓").green().bold(),
         detected.len()
     );
+    print_security_notes();
     Ok(())
 }
 
@@ -319,10 +357,7 @@ fn setup_tool(tool: &McpTool, kf_bin: &str) -> Result<()> {
         serde_json::json!({})
     };
 
-    let server_entry = serde_json::json!({
-        "command": kf_bin,
-        "args": ["serve"]
-    });
+    let server_entry = json_server_entry(tool, kf_bin);
 
     if config.get(tool.server_key).is_none() {
         config[tool.server_key] = serde_json::json!({});
@@ -355,6 +390,20 @@ fn setup_tool(tool: &McpTool, kf_bin: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn json_server_entry(tool: &McpTool, kf_bin: &str) -> serde_json::Value {
+    if tool.name == "opencode" {
+        serde_json::json!({
+            "type": "local",
+            "command": [kf_bin, "serve"]
+        })
+    } else {
+        serde_json::json!({
+            "command": kf_bin,
+            "args": ["serve"]
+        })
+    }
 }
 
 fn setup_tool_toml(tool: &McpTool, path: &std::path::Path, kf_bin: &str) -> Result<()> {
@@ -420,4 +469,32 @@ fn setup_tool_toml(tool: &McpTool, path: &std::path::Path, kf_bin: &str) -> Resu
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opencode_entry_uses_local_command_array() {
+        let tool = MCP_TOOLS
+            .iter()
+            .find(|tool| tool.name == "opencode")
+            .unwrap();
+        let entry = json_server_entry(tool, "/tmp/kf");
+
+        assert_eq!(entry["type"], "local");
+        assert_eq!(entry["command"], serde_json::json!(["/tmp/kf", "serve"]));
+        assert!(entry.get("args").is_none());
+    }
+
+    #[test]
+    fn standard_json_entry_uses_command_and_args() {
+        let tool = MCP_TOOLS.iter().find(|tool| tool.name == "cursor").unwrap();
+        let entry = json_server_entry(tool, "/tmp/kf");
+
+        assert_eq!(entry["command"], "/tmp/kf");
+        assert_eq!(entry["args"], serde_json::json!(["serve"]));
+        assert!(entry.get("type").is_none());
+    }
 }
