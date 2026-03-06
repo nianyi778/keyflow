@@ -2,9 +2,9 @@
 
 # KeyFlow
 
-**AI-Native Secret Manager**
+**Developer Key Vault For Repeatable Work**
 
-Let AI coding assistants automatically discover and use your API keys.
+Store the API keys you already created, find them later, and reuse them across projects with or without AI coding assistants.
 
 [![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -14,34 +14,39 @@ Let AI coding assistants automatically discover and use your API keys.
 
 ---
 
-## The Problem
+## What It Solves
 
-Every developer has experienced this:
-- New project? Go to Google Console, GitHub Settings, Cloudflare Dashboard to create new keys...again
-- Key expired? Production goes down, you scramble to find where to renew it
-- AI assistant writes code? You have to manually tell it which env var to use every single time
-- CF Workers deploy fails? Forgot which token with what permissions you need
+KeyFlow is built for a common developer workflow:
+- You already created API keys for Google, GitHub, Cloudflare, Resend, OpenAI, Stripe, and others
+- A few weeks later, you forget which key still works, which env var name you used, and which project it belongs to
+- You end up creating new keys again because the old ones are hard to find
+- AI coding assistants can write code faster, but they do not know which secrets you already have
 
-**KeyFlow bridges the gap between your secrets and your AI coding tools.**
+**KeyFlow turns those one-off keys into a reusable local asset library.**
+
+Use it to:
+- store keys once and search them later
+- tag them by project, provider, and group
+- export or inject them back into local development
+- track expiration and stale credentials
+- optionally let AI tools discover metadata about available keys
 
 ## How It Works
 
 ```
-You                          KeyFlow                        AI Assistant
- │                              │                               │
- │  kf add google-key          │                               │
- │ ──────────────────────────► │                               │
- │                              │  MCP Server (search_keys)    │
- │                              │ ◄──────────────────────────── │
- │                              │  {env_var: "GOOGLE_API_KEY",  │
- │                              │   status: "active",           │
- │                              │   scopes: ["Maps API"]}       │
- │                              │ ────────────────────────────► │
- │                              │                               │
- │                              │  AI writes:                   │
- │                              │  api_key = os.environ[        │
- │                              │    "GOOGLE_API_KEY"            │
- │                              │  ]                             │
+You                          KeyFlow
+ │                              │
+ │  create / import a key      │
+ │ ──────────────────────────► │  encrypted local vault
+ │                              │
+ │  kf search github           │
+ │ ◄────────────────────────── │  find reusable keys
+ │                              │
+ │  kf run -- npm dev          │
+ │ ◄────────────────────────── │  inject env vars at runtime
+ │                              │
+ │  optional: MCP for AI       │
+ │ ◄────────────────────────── │  expose metadata, not values
 ```
 
 ---
@@ -112,33 +117,37 @@ brew install keyflow
 # Initialize vault
 kf init
 
-# Add secrets (interactive)
-kf add
+# Add a key you already created
+kf add GOOGLE_CLIENT_ID xxx --provider google --projects myapp
+kf add CF_API_TOKEN xxx --provider cloudflare --projects myapp
 
-# Connect your AI tools (Claude, Cursor, Windsurf, etc.)
-kf setup
-
-# List all secrets
+# List and search what you already have
 kf list
-
-# Search
 kf search cloudflare
 
-# Check health (expired/expiring keys)
-kf health
-
-# Run command with secrets injected
-kf run -- npm start
-kf run --project myapp -- python app.py
-
-# Export as .env
+# Reuse them in local development
+kf run --project myapp -- npm start
 kf export --project myapp -o .env
 
-# Import from .env
-kf import .env --provider imported --project myapp
+# Check what needs cleanup
+kf health
+
+# Optional: connect AI tools later
+kf setup
 ```
 
 > `kf` is the shorthand for `keyflow`. Both commands are identical.
+
+## New User Flow
+
+For a new user, the recommended path is:
+1. `kf init`
+2. Add 3-5 keys you already use often
+3. Tag them with `--projects` so they are easy to reuse
+4. Use `kf list`, `kf search`, `kf run`, and `kf export` in a real project
+5. Only after that, connect AI tools with `kf setup`
+
+If you never use AI, KeyFlow still works as a local developer key vault.
 
 ## Interactive Interfaces
 
@@ -172,11 +181,14 @@ Opens a local-only dark-themed web dashboard at `http://127.0.0.1:9876` with:
 - Filter by provider, project, group
 - i18n support: English, Chinese, Japanese
 
-## MCP Server (AI Integration)
+## AI Integration
 
-KeyFlow includes a built-in MCP server that lets AI coding assistants (Claude Code, Cursor, Windsurf, etc.) discover your secrets **without ever seeing the actual values** — and deploy them to cloud services securely.
+KeyFlow includes a built-in MCP server for AI coding assistants, but this is an enhancement layer, not the core product.
 
-### Quick Setup (Recommended)
+The core product is local key storage, search, reuse, export, and health tracking.
+The AI layer helps assistants discover which env vars and providers already exist without exposing actual secret values.
+
+### Optional Setup
 
 ```bash
 kf setup          # Auto-detect & configure all installed AI tools
@@ -203,7 +215,9 @@ If you prefer manual configuration, add to your AI tool's MCP config:
 }
 ```
 
-### What AI sees (metadata only, never the actual secret):
+### What AI Sees
+
+Metadata only, never the actual secret:
 
 ```json
 {
@@ -219,7 +233,7 @@ If you prefer manual configuration, add to your AI tool's MCP config:
 
 ### MCP Tools
 
-**Read** — AI discovers your secrets (metadata only, never actual values):
+**Read** — AI discovers your secret metadata (never actual values):
 
 | Tool | Description |
 |------|-------------|
@@ -230,12 +244,12 @@ If you prefer manual configuration, add to your AI tool's MCP config:
 | `check_health` | Check for expired/expiring keys |
 | `list_keys_for_project` | List secrets for a project |
 
-**Action** — AI operates on your secrets (values never pass through AI):
+**Optional actions** — AI can help with storage and delivery workflows (values never pass through AI):
 
 | Tool | Description |
 |------|-------------|
-| `deploy_secret` | Deploy a secret to a cloud service (Cloudflare Workers, Vercel, Fly.io, Heroku, Netlify, Railway). Value goes directly from vault → service CLI. |
-| `deploy_project_secrets` | Deploy ALL secrets for a project to a cloud service at once |
+| `deploy_secret` | Deliver a secret to a supported cloud target. Value goes directly from vault to the target CLI. |
+| `deploy_project_secrets` | Deliver all secrets for a project to a supported cloud target |
 | `add_key` | Add a new secret to the vault (AI stores it, then forgets the value) |
 | `get_env_snippet` | Generate `.env` file content for a project (with optional value masking) |
 | `check_project_readiness` | Check if a project has all required secrets ready |
@@ -264,14 +278,14 @@ If you prefer manual configuration, add to your AI tool's MCP config:
 | `kf backup` | Backup vault to encrypted file |
 | `kf restore <file>` | Restore vault from backup |
 | `kf serve` | Start MCP server (stdio) |
-| `kf setup` | Auto-configure MCP for AI tools (Claude, Cursor, Windsurf, Gemini, Codex, etc.) |
+| `kf setup` | Auto-configure optional MCP integration for AI tools |
 | `kf ui` | Launch interactive TUI |
 | `kf web` | Open web dashboard |
 | `kf completions <shell>` | Generate shell completions (zsh/bash/fish) |
 
 ## Templates
 
-14 predefined service templates to quickly set up key bundles:
+14 predefined service templates to quickly set up common key bundles:
 
 ```bash
 kf template list
@@ -292,6 +306,8 @@ Available: `google-oauth`, `github-oauth`, `github-token`, `cloudflare-workers`,
 ## Supported Providers
 
 Auto-suggests management URLs for: Google, GitHub, Cloudflare, AWS, Azure, OpenAI, Anthropic, Stripe, Vercel, Supabase, Firebase, Twilio, SendGrid, Slack, Docker, npm, PyPI.
+
+See [docs/product-architecture.md](/Users/likai/personage/pachong/keyflow/docs/product-architecture.md) for the current product boundaries, and [docs/product-roadmap.md](/Users/likai/personage/pachong/keyflow/docs/product-roadmap.md) for delivery priorities.
 
 ## Environment Variables
 

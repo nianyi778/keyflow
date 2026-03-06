@@ -2,7 +2,7 @@
 name = "keyflow"
 version = "0.3.1"
 edition = "2021"
-description = "AI-Native Secret Manager - Let AI coding assistants discover and use your API keys"
+description = "Developer key vault for storing, finding, and reusing API keys across projects"
 license = "MIT"
 
 [dependencies]

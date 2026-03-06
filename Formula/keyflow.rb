@@ -1,5 +1,5 @@
 class Keyflow < Formula
-  desc "AI-Native Secret Manager — Let AI coding assistants discover and use your API keys"
+  desc "Developer key vault for storing, finding, and reusing API keys"
   homepage "https://github.com/nianyi778/keyflow"
   version "0.3.1"
   license "MIT"

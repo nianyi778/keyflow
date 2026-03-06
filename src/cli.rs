@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "keyflow",
-    about = "AI-Native Secret Manager - Let AI coding assistants discover and use your API keys",
+    about = "Developer key vault for storing, finding, and reusing API keys across projects",
     version
 )]
 pub struct Cli {
