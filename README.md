@@ -290,4 +290,4 @@ cargo install --path .
 
 ## License
 
-MIT
+[MIT](LICENSE) - Copyright (c) 2026 nianyi778
