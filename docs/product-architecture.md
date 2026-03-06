@@ -1,80 +1,89 @@
-# Product Architecture
+# 产品架构
 
-## Product Definition
+## 产品定义
 
-KeyFlow is a local developer key vault.
+KeyFlow 是一个本地优先的开发者密钥资产库。
 
-Its primary job is to help developers:
-- store API keys they already created
-- find them later
-- reuse them across projects
-- avoid re-creating the same credentials
-- track expiration and stale secrets over time
+它的核心任务不是替用户申请密钥，而是帮助用户：
+- 保存已经申请过的 API Key、Token、环境变量
+- 在后续项目里快速找回
+- 按项目、账号、来源进行复用
+- 避免重复申请同类密钥
+- 持续看到哪些密钥该续、该清理、该补信息
 
-AI integration is an enhancement layer, not the product definition.
+AI 集成是增强层，不是产品本身。
 
-## Core Value
+## 核心价值
 
-These are the jobs the product must do well:
-- Local encrypted storage for developer secrets
-- Fast search by provider, env var, description, group, and project
-- Reuse in local workflows via `kf run` and `kf export`
-- Import existing `.env` files into a durable vault
-- Health visibility for expired, expiring, inactive, and stale keys
-- Lightweight metadata that helps users remember what a key is for
+这些能力必须做好：
+- 本地加密存储开发者密钥
+- 按 provider、env var、description、group、project 快速搜索
+- 通过 `kf run` 和 `kf export` 在本地工作流中复用
+- 将已有 `.env` 文件或项目目录沉淀进 vault
+- 对过期、即将过期、长期未使用、信息不完整的密钥给出健康视图
+- 提供足够轻量但足够有用的元数据，帮助用户记住“这把 key 是什么、给谁用、从哪来”
 
-If these are weak, the product loses its reason to exist.
+如果这些能力做不好，产品就失去存在意义。
 
-## AI-Enhanced Value
+## 产品界面
 
-These capabilities make the core product more powerful for AI-assisted development:
-- MCP metadata discovery for available keys
-- AI-readable env var and provider hints
-- Project readiness checks
-- Assisted key entry and retrieval workflows
-- Optional setup for Claude, Codex, Cursor, Windsurf, and similar tools
+当前主界面是：
+- CLI：负责新增、导入、搜索、导出、运行时注入
+- 本地 Web 控制台：负责可视化浏览、过滤、健康检查、复用查看
 
-These features should reduce friction, not redefine the product.
+TUI 可以继续保留给终端重度用户，但应视为次级界面，优先级低于 CLI 和 Web。
 
-## Deferred Value
+## AI 增强价值
 
-These areas are useful, but they should not dominate the roadmap until the core is solid:
-- AI-driven deployment actions
-- Broad cloud secret sync and rotation orchestration
-- Full secret lifecycle automation across external services
-- Enterprise/team workflows
-- Browser-based hosted vault behavior
+这些能力会让核心产品在 AI 编码场景里更强：
+- 通过 MCP 暴露可复用密钥的元数据
+- 给 AI 提供 env var、provider、project 维度的提示
+- 检查项目是否具备所需密钥
+- 辅助用户保存新 key、生成 `.env` 片段、做交付动作
+- 提供 Claude、Codex、Cursor、Windsurf 等工具的可选配置
 
-They increase complexity, safety burden, and support surface quickly.
+这些能力的目标是降低摩擦，不是重新定义产品。
 
-## Product Guardrails
+## 暂缓价值
 
-When deciding whether to add a feature, prefer it if it strengthens one of these:
-- easier key capture
-- easier search and recall
-- easier safe reuse
-- better visibility into key health and ownership
+这些方向有价值，但不应该在核心能力还不扎实时主导路线：
+- AI 驱动的部署动作编排
+- 面向大量 provider 的广泛同步与轮换自动化
+- 面向外部服务的全生命周期自动管理
+- 企业级团队协作与权限体系
+- 托管版 Web 行为先于单机工作流成熟
 
-Be cautious if a feature mainly does one of these:
-- turns the product into a deployment tool
-- stores more sensitive material outside the local vault
-- makes AI the only believable entry point
-- adds provider-specific complexity without improving reuse
+这些方向会显著增加复杂度、安全负担和支持成本。
 
-## Ideal User Journey
+## 产品护栏
 
-1. A developer initializes the vault.
-2. They add keys they already use for Google, GitHub, Cloudflare, Resend, OpenAI, Stripe, and others.
-3. They tag each key with project and purpose.
-4. They reuse those keys with `kf search`, `kf run`, and `kf export`.
-5. They use `kf health` to see what needs cleanup or rotation.
-6. They optionally connect AI tools so assistants can discover metadata and suggest the right env vars.
+如果一个功能能强化下面任一能力，优先考虑：
+- 更容易沉淀已有 key
+- 更容易搜索和找回
+- 更容易安全复用
+- 更容易理解密钥的健康状态和归属
 
-## Current Product Tension
+如果一个功能主要导致下面这些后果，要谨慎：
+- 把产品变成部署平台，而不是密钥资产库
+- 让更多敏感数据离开本地 vault
+- 让 AI 成为唯一可信入口
+- 带来大量 provider 定制复杂度，但对复用帮助不大
 
-There are two competing narratives:
-- "developer key vault"
-- "AI-native secret operations toolkit"
+## 理想用户路径
 
-The first should remain primary.
-The second should stay secondary until the storage, search, reuse, and health story is clearly dominant.
+1. 开发者初始化 vault。
+2. 把已经在用的 Google、GitHub、Cloudflare、Resend、OpenAI、Stripe 等 key 存进去。
+3. 给每个 key 补上项目、账号、来源等信息。
+4. 在真实项目里使用 `kf search`、`kf run`、`kf export` 复用这些 key。
+5. 用 `kf health` 查看哪些 key 需要续期、清理、补信息。
+6. 需要时再接入 AI，让助手发现元数据并推荐正确的 env var。
+
+## 当前产品张力
+
+现在仍然存在两条叙事在拉扯：
+- “开发者密钥资产库”
+- “AI 原生密钥操作工具”
+
+前者必须保持主导。
+
+后者只能在“存储、搜索、复用、健康检查”已经足够强的前提下作为增强层存在。
