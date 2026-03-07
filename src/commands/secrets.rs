@@ -339,12 +339,14 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
         paste,
     } = args;
     let db = open_db()?;
+    let interactive = atty::is(atty::Stream::Stdin);
 
     let env_var = match env_var {
         Some(e) => e,
-        None => Input::new()
+        None if interactive => Input::new()
             .with_prompt("Env var name (e.g. GOOGLE_CLIENT_ID)")
             .interact_text()?,
+        None => bail!("Env var name is required in non-interactive mode"),
     };
 
     let name = env_var.to_lowercase().replace('_', "-");
@@ -375,7 +377,7 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
         } else {
             v
         }
-    } else if !atty::is(atty::Stream::Stdin) {
+    } else if !interactive {
         use std::io::Read;
         let mut buf = String::new();
         std::io::stdin().read_to_string(&mut buf)?;
@@ -391,20 +393,23 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
     let provider = match provider {
         Some(p) => p,
         None => {
-            if let Some(inferred) = infer_provider(&env_var) {
+            let inferred = infer_provider(&env_var);
+            if let Some(ref p) = inferred {
                 println!(
                     "  {} provider: {}",
                     style("▸").dim(),
-                    style(inferred).cyan()
+                    style(p).cyan()
                 );
-                inferred.to_string()
-            } else {
+            }
+            if interactive && inferred.is_none() {
                 let idx = Select::new()
                     .with_prompt("Provider")
                     .items(PROVIDERS)
                     .default(PROVIDERS.len() - 1)
                     .interact()?;
                 PROVIDERS[idx].to_string()
+            } else {
+                inferred.unwrap_or("other").to_string()
             }
         }
     };
@@ -420,11 +425,15 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
                     style(&detected).cyan()
                 );
             }
-            let p: String = Input::new()
-                .with_prompt("Project tags (comma-separated)")
-                .default(detected)
-                .interact_text()?;
-            parse_csv(&p)
+            if interactive {
+                let p: String = Input::new()
+                    .with_prompt("Project tags (comma-separated)")
+                    .default(detected)
+                    .interact_text()?;
+                parse_csv(&p)
+            } else {
+                parse_csv(&detected)
+            }
         }
     };
 

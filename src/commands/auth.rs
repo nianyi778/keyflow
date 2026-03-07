@@ -128,16 +128,69 @@ pub fn cmd_lock() -> Result<()> {
     Ok(())
 }
 
+/// Prompt for passphrase using a native OS dialog (no terminal needed).
+/// Works when called from AI tools, MCP servers, or other non-interactive contexts.
+fn get_passphrase_gui() -> Result<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(
+                r#"display dialog "Enter KeyFlow passphrase:" default answer "" with hidden answer buttons {"OK", "Cancel"} default button "OK" with title "KeyFlow 🔑""#,
+            )
+            .arg("-e")
+            .arg("text returned of result")
+            .output()
+            .context("Failed to launch macOS password dialog")?;
+        if !output.status.success() {
+            bail!("Password dialog was cancelled");
+        }
+        let pass = String::from_utf8(output.stdout)?.trim().to_string();
+        if pass.is_empty() {
+            bail!("Passphrase cannot be empty");
+        }
+        return Ok(pass);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let output = std::process::Command::new("zenity")
+            .args(["--password", "--title=KeyFlow 🔑"])
+            .output()
+            .context("Failed to launch password dialog (is zenity installed?)")?;
+        if !output.status.success() {
+            bail!("Password dialog was cancelled");
+        }
+        let pass = String::from_utf8(output.stdout)?.trim().to_string();
+        if pass.is_empty() {
+            bail!("Passphrase cannot be empty");
+        }
+        return Ok(pass);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        bail!("No terminal available and no GUI dialog supported on this platform. Set KEYFLOW_PASSPHRASE environment variable.");
+    }
+}
+
 pub fn get_passphrase() -> Result<String> {
+    // 1. Environment variable (CI/scripting)
     if let Ok(pass) = std::env::var("KEYFLOW_PASSPHRASE") {
         return Ok(pass);
     }
+    // 2. Cached session
     if let Some(pass) = read_session() {
         return Ok(pass);
     }
-    let pass = Password::new()
-        .with_prompt("KeyFlow passphrase")
-        .interact()?;
+    // 3. Interactive terminal prompt
+    if atty::is(atty::Stream::Stdin) {
+        let pass = Password::new()
+            .with_prompt("KeyFlow passphrase")
+            .interact()?;
+        let _ = save_session(&pass);
+        return Ok(pass);
+    }
+    // 4. Native OS dialog (for AI tools, MCP, non-terminal contexts)
+    let pass = get_passphrase_gui()?;
     let _ = save_session(&pass);
     Ok(pass)
 }
