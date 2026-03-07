@@ -1470,12 +1470,16 @@ initDropdown('dd-group', 'group');
 initDropdown('dd-account', 'account');
 initDropdown('dd-source', 'source');
 
+// ── Auth Token ───────────────────────────────────────
+const KF_TOKEN = '{{KEYFLOW_TOKEN}}';
+const authHeaders = { 'Authorization': 'Bearer ' + KF_TOKEN };
+
 // ── App State ────────────────────────────────────────
 let allSecrets = [];
 let healthData = {};
 
 async function fetchJSON(url) {
-  const r = await fetch(url);
+  const r = await fetch(url, { headers: authHeaders });
   return r.json();
 }
 
@@ -1603,7 +1607,7 @@ async function verifyKey(name) {
   btn.disabled = true;
 
   try {
-    const res = await fetch('/api/verify/' + encodeURIComponent(name), { method: 'POST' });
+    const res = await fetch('/api/verify/' + encodeURIComponent(name), { method: 'POST', headers: authHeaders });
     const data = await res.json();
     if (data.ok) {
       btn.classList.add('just-verified');
@@ -1649,7 +1653,7 @@ function openDrawer(name) {
   drawer.classList.add('open');
   document.body.classList.add('drawer-open');
 
-  fetch('/api/secret/' + encodeURIComponent(name))
+  fetch('/api/secret/' + encodeURIComponent(name), { headers: authHeaders })
     .then(r => r.json())
     .then(s => {
       const fields = [
@@ -1708,7 +1712,7 @@ function closeDrawer() {
 function drawerVerify(name, btn) {
   if (btn.disabled) return;
   btn.disabled = true;
-  fetch('/api/verify/' + encodeURIComponent(name), { method: 'POST' })
+  fetch('/api/verify/' + encodeURIComponent(name), { method: 'POST', headers: authHeaders })
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.ok) {
@@ -1732,7 +1736,7 @@ async function markInactive(name, btn) {
   if (btn.disabled) return;
   btn.disabled = true;
   try {
-    const res = await fetch('/api/inactive/' + encodeURIComponent(name), { method: 'POST' });
+    const res = await fetch('/api/inactive/' + encodeURIComponent(name), { method: 'POST', headers: authHeaders });
     const data = await res.json();
     if (data.ok) {
       btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>' + t('marked_inactive');

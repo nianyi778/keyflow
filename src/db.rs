@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 
@@ -23,6 +23,9 @@ pub struct MetadataUpdate<'a> {
     pub key_group: Option<&'a str>,
 }
 
+/// Column list for SELECT queries — single source of truth.
+const SECRET_COLUMNS: &str = "id, name, env_var, provider, account_name, description, source, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, last_verified_at, is_active, key_group, org_name, environment, permission_profile";
+
 pub struct Database {
     conn: Connection,
     crypto: Crypto,
@@ -31,6 +34,8 @@ pub struct Database {
 impl Database {
     pub fn open(db_path: &str, crypto: Crypto) -> Result<Self> {
         let conn = Connection::open(db_path)?;
+        // WAL mode: better concurrent read/write performance for MCP server & web dashboard
+        conn.pragma_update(None, "journal_mode", "WAL")?;
         let db = Self { conn, crypto };
         db.init_tables()?;
         db.migrate()?;
@@ -93,6 +98,16 @@ impl Database {
     }
 
     fn add_column_if_missing(&self, column: &str, definition: &str) -> Result<()> {
+        // Whitelist check: only allow known safe identifiers
+        if !column.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            bail!("Invalid column name: {}", column);
+        }
+        if !definition
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b' ' || b == b'\'' || b == b'[' || b == b']')
+        {
+            bail!("Invalid column definition: {}", definition);
+        }
         let exists: bool = self
             .conn
             .prepare("SELECT COUNT(*) FROM pragma_table_info('secrets') WHERE name = ?1")?
@@ -141,8 +156,9 @@ impl Database {
     }
 
     pub fn list_secrets(&self, filter: &ListFilter) -> Result<Vec<SecretEntry>> {
-        let mut sql = String::from(
-            "SELECT id, name, env_var, provider, account_name, description, source, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, last_verified_at, is_active, key_group, org_name, environment, permission_profile FROM secrets WHERE 1=1",
+        let mut sql = format!(
+            "SELECT {} FROM secrets WHERE 1=1",
+            SECRET_COLUMNS,
         );
         let mut bind_values: Vec<String> = Vec::new();
 
@@ -151,8 +167,9 @@ impl Database {
             sql.push_str(&format!(" AND provider = ?{}", bind_values.len()));
         }
         if let Some(ref project) = filter.project {
-            bind_values.push(format!("%\"{}\"%", project));
-            sql.push_str(&format!(" AND projects LIKE ?{}", bind_values.len()));
+            let escaped = project.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+            bind_values.push(format!("%\"{}\"%", escaped));
+            sql.push_str(&format!(" AND projects LIKE ?{} ESCAPE '\\'", bind_values.len()));
         }
         if let Some(ref group) = filter.group {
             bind_values.push(group.clone());
@@ -190,7 +207,7 @@ impl Database {
 
     pub fn get_secret(&self, name: &str) -> Result<SecretEntry> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, env_var, provider, account_name, description, source, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, last_verified_at, is_active, key_group, org_name, environment, permission_profile FROM secrets WHERE name = ?1",
+            &format!("SELECT {} FROM secrets WHERE name = ?1", SECRET_COLUMNS),
         )?;
         let entry = stmt
             .query_row(params![name], |row| Ok(self.row_to_entry(row)))
@@ -343,12 +360,11 @@ impl Database {
     }
 
     pub fn search_secrets(&self, query: &str) -> Result<Vec<SecretEntry>> {
-        let pattern = format!("%{}%", query);
+        // Escape LIKE wildcards so % and _ in user input are matched literally
+        let escaped = query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        let pattern = format!("%{}%", escaped);
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, env_var, provider, account_name, description, source, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, last_verified_at, is_active, key_group, org_name, environment, permission_profile
-             FROM secrets
-             WHERE name LIKE ?1 OR env_var LIKE ?1 OR provider LIKE ?1 OR account_name LIKE ?1 OR description LIKE ?1 OR source LIKE ?1 OR scopes LIKE ?1 OR projects LIKE ?1 OR key_group LIKE ?1 OR org_name LIKE ?1
-             ORDER BY name",
+            &format!("SELECT {} FROM secrets WHERE name LIKE ?1 ESCAPE '\\' OR env_var LIKE ?1 ESCAPE '\\' OR provider LIKE ?1 ESCAPE '\\' OR account_name LIKE ?1 ESCAPE '\\' OR description LIKE ?1 ESCAPE '\\' OR source LIKE ?1 ESCAPE '\\' OR scopes LIKE ?1 ESCAPE '\\' OR projects LIKE ?1 ESCAPE '\\' OR key_group LIKE ?1 ESCAPE '\\' OR org_name LIKE ?1 ESCAPE '\\' ORDER BY name", SECRET_COLUMNS),
         )?;
         let rows = stmt.query_map(params![pattern], |row| Ok(self.row_to_entry(row)))?;
         let mut entries = Vec::new();
@@ -405,19 +421,34 @@ impl Database {
         self.crypto.decrypt(encrypted)
     }
 
-    /// Re-encrypt and update a secret with new crypto
-    pub fn reencrypt_secret(
+    /// Re-encrypt all secrets atomically within a transaction.
+    /// If any re-encryption fails, all changes are rolled back.
+    pub fn reencrypt_all(
         &self,
-        name: &str,
-        plaintext: &[u8],
+        pairs: &[(String, Vec<u8>)],
         new_crypto: &Crypto,
     ) -> Result<()> {
-        let new_encrypted = new_crypto.encrypt(plaintext)?;
-        self.conn.execute(
-            "UPDATE secrets SET encrypted_value = ?1 WHERE name = ?2",
-            params![new_encrypted, name],
-        )?;
-        Ok(())
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> Result<()> {
+            for (name, plaintext) in pairs {
+                let new_encrypted = new_crypto.encrypt(plaintext)?;
+                self.conn.execute(
+                    "UPDATE secrets SET encrypted_value = ?1 WHERE name = ?2",
+                    params![new_encrypted, name],
+                )?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
     }
 
     /// List distinct groups
@@ -436,34 +467,38 @@ impl Database {
     }
 
     fn row_to_entry(&self, row: &rusqlite::Row) -> Result<SecretEntry> {
-        let scopes_str: String = row.get(7)?;
-        let projects_str: String = row.get(8)?;
-        let expires_str: Option<String> = row.get(10)?;
-        let last_used_str: Option<String> = row.get(13)?;
-        let last_verified_str: Option<String> = row.get(14)?;
+        let scopes_str: String = row.get_unwrap("scopes");
+        let projects_str: String = row.get_unwrap("projects");
+        let expires_str: Option<String> = row.get_unwrap("expires_at");
+        let last_used_str: Option<String> = row.get_unwrap("last_used_at");
+        let last_verified_str: Option<String> = row.get_unwrap("last_verified_at");
 
         Ok(SecretEntry {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            env_var: row.get(2)?,
-            provider: row.get(3)?,
-            account_name: row.get(4)?,
-            description: row.get(5)?,
-            source: row.get(6)?,
+            id: row.get_unwrap("id"),
+            name: row.get_unwrap("name"),
+            env_var: row.get_unwrap("env_var"),
+            provider: row.get_unwrap("provider"),
+            account_name: row.get_unwrap("account_name"),
+            description: row.get_unwrap("description"),
+            source: row.get_unwrap("source"),
             scopes: serde_json::from_str(&scopes_str).unwrap_or_default(),
             projects: serde_json::from_str(&projects_str).unwrap_or_default(),
-            apply_url: row.get(9)?,
+            apply_url: row.get_unwrap("apply_url"),
             expires_at: expires_str.and_then(|s| {
                 DateTime::parse_from_rfc3339(&s)
                     .ok()
                     .map(|d| d.with_timezone(&Utc))
             }),
-            created_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(11)?)
-                .map(|d| d.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
-            updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(12)?)
-                .map(|d| d.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
+            created_at: DateTime::parse_from_rfc3339(
+                &row.get::<_, String>(row.as_ref().column_index("created_at")?)?,
+            )
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
+            updated_at: DateTime::parse_from_rfc3339(
+                &row.get::<_, String>(row.as_ref().column_index("updated_at")?)?,
+            )
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now()),
             last_used_at: last_used_str.and_then(|s| {
                 DateTime::parse_from_rfc3339(&s)
                     .ok()
@@ -474,11 +509,11 @@ impl Database {
                     .ok()
                     .map(|d| d.with_timezone(&Utc))
             }),
-            is_active: row.get(15)?,
-            key_group: row.get(16)?,
-            org_name: row.get(17)?,
-            environment: row.get(18)?,
-            permission_profile: row.get(19)?,
+            is_active: row.get_unwrap("is_active"),
+            key_group: row.get_unwrap("key_group"),
+            org_name: row.get_unwrap("org_name"),
+            environment: row.get_unwrap("environment"),
+            permission_profile: row.get_unwrap("permission_profile"),
         })
     }
 }

@@ -72,33 +72,7 @@ pub(crate) const PROVIDERS: &[&str] = &[
 ];
 
 pub(crate) fn infer_provider(env_var: &str) -> Option<&'static str> {
-    let upper = env_var.to_uppercase();
-    let patterns: &[(&[&str], &str)] = &[
-        (&["GOOGLE", "GCLOUD", "GCP", "FIREBASE"], "google"),
-        (&["GITHUB", "GH_"], "github"),
-        (&["CLOUDFLARE", "CF_"], "cloudflare"),
-        (&["AWS_", "AMAZON"], "aws"),
-        (&["AZURE_"], "azure"),
-        (&["OPENAI"], "openai"),
-        (&["ANTHROPIC", "CLAUDE"], "anthropic"),
-        (&["STRIPE"], "stripe"),
-        (&["VERCEL"], "vercel"),
-        (&["SUPABASE"], "supabase"),
-        (&["TWILIO"], "twilio"),
-        (&["RESEND"], "resend"),
-        (&["SENDGRID"], "sendgrid"),
-        (&["SLACK"], "slack"),
-        (&["DOCKER"], "docker"),
-        (&["NPM_"], "npm"),
-    ];
-    for (keywords, provider) in patterns {
-        for kw in *keywords {
-            if upper.contains(kw) {
-                return Some(provider);
-            }
-        }
-    }
-    None
+    crate::models::infer_provider(env_var)
 }
 
 pub(crate) fn detect_project_name() -> Option<String> {

@@ -6,7 +6,7 @@ use tiny_http::{Header, Method, Response, Server};
 use crate::commands::{get_passphrase, load_config};
 use crate::crypto::Crypto;
 use crate::db::Database;
-use crate::models::ListFilter;
+use crate::models::{self, ListFilter};
 
 const DASHBOARD_HTML: &str = include_str!("dashboard.html");
 
@@ -18,8 +18,48 @@ fn open_db_for_dashboard() -> Result<Database> {
     Database::open(db_path.to_str().unwrap(), crypto)
 }
 
+/// Generate a random URL-safe token for dashboard authentication.
+fn generate_dashboard_token() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 24];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &bytes)
+}
+
+/// Check if a request carries a valid auth token (query param or Authorization header).
+fn check_auth(request: &tiny_http::Request, token: &str) -> bool {
+    let url = request.url();
+    // Check ?token=xxx query parameter
+    if let Some(query) = url.split('?').nth(1) {
+        for pair in query.split('&') {
+            if let Some(val) = pair.strip_prefix("token=") {
+                if val == token {
+                    return true;
+                }
+            }
+        }
+    }
+    // Check Authorization: Bearer xxx header
+    for header in request.headers() {
+        if header.field.as_str().to_ascii_lowercase() == "authorization" {
+            if let Some(bearer_token) = header.value.as_str().strip_prefix("Bearer ") {
+                if bearer_token == token {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Strip the ?token=... query parameter from a URL path for routing.
+fn strip_query(url: &str) -> &str {
+    url.split('?').next().unwrap_or(url)
+}
+
 pub fn cmd_dashboard(port: u16) -> Result<()> {
     let db = open_db_for_dashboard()?;
+    let token = generate_dashboard_token();
 
     let max_attempts = 10;
     let mut actual_port = port;
@@ -41,6 +81,7 @@ pub fn cmd_dashboard(port: u16) -> Result<()> {
         }
     };
     let addr = format!("127.0.0.1:{}", actual_port);
+    let dashboard_url = format!("http://{}?token={}", addr, token);
 
     if actual_port != port {
         println!(
@@ -53,7 +94,7 @@ pub fn cmd_dashboard(port: u16) -> Result<()> {
     println!(
         "\n{} KeyFlow Dashboard running at {}",
         style("✓").green().bold(),
-        style(format!("http://{}", addr)).cyan().underlined()
+        style(&dashboard_url).cyan().underlined()
     );
     println!("  Press {} to stop.\n", style("Ctrl+C").yellow());
 
@@ -61,27 +102,45 @@ pub fn cmd_dashboard(port: u16) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("open")
-            .arg(format!("http://{}", addr))
+            .arg(&dashboard_url)
             .spawn();
     }
 
     for request in server.incoming_requests() {
         let url = request.url().to_string();
         let method = request.method().clone();
+        let path = strip_query(&url);
 
-        let response = match (method, url.as_str()) {
+        // The main HTML page is served with token in query param;
+        // it should inject the token into API calls via JS.
+        // For the HTML page itself, allow access with token in query.
+        // For API endpoints, require auth.
+        let is_api = path.starts_with("/api/");
+        if is_api && !check_auth(&request, &token) {
+            let _ = request.respond(
+                Response::from_string(r#"{"error":"unauthorized"}"#).with_status_code(401),
+            );
+            continue;
+        }
+
+        let response = match (method, path) {
             (Method::Get, "/") => {
+                // Inject the token into the HTML so frontend JS can use it for API calls
+                let html = DASHBOARD_HTML.replace(
+                    "{{KEYFLOW_TOKEN}}",
+                    &token,
+                );
                 let header =
                     Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
                         .unwrap();
-                Response::from_string(DASHBOARD_HTML).with_header(header)
+                Response::from_string(html).with_header(header)
             }
             (Method::Get, "/api/stats") => json_response(&handle_stats(&db)),
             (Method::Get, "/api/secrets") => json_response(&handle_secrets(&db)),
             (Method::Get, "/api/health") => json_response(&handle_health(&db)),
             (Method::Get, "/api/groups") => json_response(&handle_groups(&db)),
-            (Method::Get, path) if path.starts_with("/api/search") => {
-                let query = path
+            (Method::Get, p) if p.starts_with("/api/search") => {
+                let query = url
                     .split("q=")
                     .nth(1)
                     .unwrap_or("")
@@ -91,16 +150,16 @@ pub fn cmd_dashboard(port: u16) -> Result<()> {
                 let decoded = urldecode(query);
                 json_response(&handle_search(&db, &decoded))
             }
-            (Method::Post, path) if path.starts_with("/api/verify/") => {
-                let name = urldecode(&path["/api/verify/".len()..]);
+            (Method::Post, p) if p.starts_with("/api/verify/") => {
+                let name = urldecode(&p["/api/verify/".len()..]);
                 json_response(&handle_verify(&db, &name))
             }
-            (Method::Post, path) if path.starts_with("/api/inactive/") => {
-                let name = urldecode(&path["/api/inactive/".len()..]);
+            (Method::Post, p) if p.starts_with("/api/inactive/") => {
+                let name = urldecode(&p["/api/inactive/".len()..]);
                 json_response(&handle_mark_inactive(&db, &name))
             }
-            (Method::Get, path) if path.starts_with("/api/secret/") => {
-                let name = urldecode(&path["/api/secret/".len()..]);
+            (Method::Get, p) if p.starts_with("/api/secret/") => {
+                let name = urldecode(&p["/api/secret/".len()..]);
                 json_response(&handle_secret_detail(&db, &name))
             }
             _ => Response::from_string("404 Not Found").with_status_code(404),
@@ -118,10 +177,7 @@ fn json_response(body: &str) -> Response<std::io::Cursor<Vec<u8>>> {
         &b"application/json; charset=utf-8"[..],
     )
     .unwrap();
-    let cors = Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap();
-    Response::from_string(body)
-        .with_header(header)
-        .with_header(cors)
+    Response::from_string(body).with_header(header)
 }
 
 fn urldecode(s: &str) -> String {
@@ -145,29 +201,7 @@ fn urldecode(s: &str) -> String {
 }
 
 fn secret_to_json(entry: &crate::models::SecretEntry) -> serde_json::Value {
-    json!({
-        "name": entry.name,
-        "env_var": entry.env_var,
-        "provider": entry.provider,
-        "account_name": entry.account_name,
-        "org_name": entry.org_name,
-        "description": entry.description,
-        "source": entry.source,
-        "environment": entry.environment,
-        "permission_profile": entry.permission_profile,
-        "scopes": entry.scopes,
-        "projects": entry.projects,
-        "key_group": entry.key_group,
-        "apply_url": entry.apply_url,
-        "status": entry.status().to_string(),
-        "expires_at": entry.expires_at.map(|d| d.format("%Y-%m-%d").to_string()),
-        "last_used_at": entry.last_used_at.map(|d| d.format("%Y-%m-%d").to_string()),
-        "last_verified_at": entry
-            .last_verified_at
-            .map(|d| d.format("%Y-%m-%d").to_string()),
-        "metadata_gaps": entry.metadata_gaps(),
-        "source_quality": entry.source_quality().to_string(),
-    })
+    models::secret_to_json(entry)
 }
 
 fn handle_stats(db: &Database) -> String {
@@ -219,29 +253,9 @@ fn handle_health(db: &Database) -> String {
             ..Default::default()
         })
         .unwrap_or_default();
+
     let now = chrono::Utc::now();
     let seven_days_ago = now - chrono::Duration::days(7);
-
-    let expired: Vec<_> = entries
-        .iter()
-        .filter(|e| matches!(e.status(), crate::models::KeyStatus::Expired))
-        .map(secret_to_json)
-        .collect();
-    let expiring: Vec<_> = entries
-        .iter()
-        .filter(|e| matches!(e.status(), crate::models::KeyStatus::ExpiringSoon))
-        .map(secret_to_json)
-        .collect();
-    let unused: Vec<_> = entries
-        .iter()
-        .filter(|e| e.is_unused_for_days(now, 30))
-        .map(secret_to_json)
-        .collect();
-    let metadata_review: Vec<_> = entries
-        .iter()
-        .filter(|e| e.is_active && e.has_metadata_gaps())
-        .map(secret_to_json)
-        .collect();
     let recently_verified: Vec<_> = entries
         .iter()
         .filter(|e| {
@@ -252,52 +266,20 @@ fn handle_health(db: &Database) -> String {
         .map(secret_to_json)
         .collect();
 
-    let duplicates = crate::models::find_duplicate_groups(&entries);
-    let duplicate_groups: Vec<_> = duplicates
-        .iter()
-        .map(|g| json!({"env_var": g.env_var, "names": g.names}))
-        .collect();
-
-    let active_entries: Vec<_> = entries.iter().filter(|e| e.is_active).collect();
-    let mut source_quality: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
-    for e in &active_entries {
-        *source_quality
-            .entry(e.source_quality().to_string())
-            .or_insert(0) += 1;
-    }
-
-    let unverified_30 = active_entries
-        .iter()
-        .filter(|e| {
-            let d = e.unverified_days(now);
-            (30..60).contains(&d)
-        })
-        .count();
-    let unverified_60 = active_entries
-        .iter()
-        .filter(|e| {
-            let d = e.unverified_days(now);
-            (60..90).contains(&d)
-        })
-        .count();
-    let unverified_90 = active_entries
-        .iter()
-        .filter(|e| e.unverified_days(now) >= 90)
-        .count();
+    let h = models::HealthReport::from_entries(&entries);
 
     json!({
-        "expired": expired,
-        "expiring_soon": expiring,
-        "unused_30_days": unused,
-        "metadata_review": metadata_review,
+        "expired": h.expired,
+        "expiring_soon": h.expiring_soon,
+        "unused_30_days": h.unused_30d,
+        "metadata_review": h.metadata_review,
         "recently_verified": recently_verified,
-        "duplicates": duplicate_groups,
-        "source_quality": source_quality,
+        "duplicates": h.duplicate_groups,
+        "source_quality": h.source_quality,
         "unverified": {
-            "30_59_days": unverified_30,
-            "60_89_days": unverified_60,
-            "90_plus_days": unverified_90,
+            "30_59_days": h.unverified_30,
+            "60_89_days": h.unverified_60,
+            "90_plus_days": h.unverified_90,
         },
     })
     .to_string()

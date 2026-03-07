@@ -128,9 +128,7 @@ pub fn cmd_passwd(old_arg: Option<String>, new_arg: Option<String>) -> Result<()
     let new_salt = Crypto::generate_salt();
     let new_crypto = Crypto::new(&new_pass, &new_salt)?;
 
-    for (name, plaintext) in &decrypted_pairs {
-        db.reencrypt_secret(name, plaintext, &new_crypto)?;
-    }
+    db.reencrypt_all(&decrypted_pairs, &new_crypto)?;
 
     let new_salt_b64 =
         base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &new_salt);

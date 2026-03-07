@@ -109,7 +109,7 @@ AI 在后台会调用 `add_key`。
 
 这是当前推荐的可视化入口。
 
-本地启动一个只监听 `127.0.0.1` 的 dashboard，默认地址：`http://127.0.0.1:9876`
+本地启动一个只监听 `127.0.0.1` 的 dashboard。每次启动时会生成一个随机认证 token，浏览器通过带 token 的 URL 打开（如 `http://127.0.0.1:9876?token=xxx`），所有 API 请求需要携带该 token 才能访问。
 
 你可以在这里：
 - 浏览全部密钥
@@ -509,7 +509,7 @@ kf verify --all
 
 ## 模板
 
-当前内置 15 个常见服务模板：
+当前内置 20 个常见服务模板：
 
 ```bash
 kf template list
@@ -517,7 +517,7 @@ kf template use google-oauth --projects myapp --expires 2027-01-15
 ```
 
 包括：
-`google-oauth`、`github-oauth`、`github-token`、`cloudflare-workers`、`cloudflare-r2`、`aws-iam`、`stripe`、`supabase`、`openai`、`anthropic`、`vercel`、`firebase`、`sendgrid`、`docker`、`resend`
+`google-oauth`、`github-oauth`、`github-token`、`github-app`、`cloudflare-workers`、`cloudflare-r2`、`cloudflare-pages`、`cloudflare-dns`、`aws-iam`、`stripe`、`stripe-connect`、`supabase`、`openai`、`openai-org`、`anthropic`、`vercel`、`firebase`、`sendgrid`、`docker`、`resend`、`google-cloud-sa`、`google-maps`
 
 ---
 
@@ -529,21 +529,26 @@ kf template use google-oauth --projects myapp --expires 2027-01-15
 - MCP 默认只暴露元数据，不暴露真实密钥值
 - `kf setup` 现在优先依赖本地 session，不再把主密码写进 AI 工具配置文件
 - `kf run` 通过运行时注入环境变量，避免把明文长期落盘
-- `kf web` 只监听 `127.0.0.1`
+- `kf web` 只监听 `127.0.0.1`，且带随机 token 认证（未授权请求返回 401）
+- Session 文件使用机器本地密钥加密存储，不再明文保存主密码
+- `kf passwd` 使用数据库事务保护，re-encrypt 中途失败会自动回滚
+- MCP deploy 工具对环境变量名做严格校验（只允许 `[A-Za-z0-9_]`），防止命令注入
 
 ### Session 模型怎么工作
 
 KeyFlow 使用本地 session 文件来避免重复输入主密码：
 
 1. 首次运行任何 kf 命令时，输入主密码后会创建 `~/.keyflow/.session`
-2. 后续命令自动读取 session，无需再次输入密码
-3. Session 文件权限为 `0600`，仅当前用户可读
-4. Session 24 小时后自动过期，过期后需要重新输入密码
-5. 运行 `kf lock` 可以立即清除 session
+2. Session 文件中的密码使用机器本地密钥（基于 hostname + 数据目录路径派生）加密，**不是明文存储**
+3. 后续命令自动解密 session 并读取密码，无需再次输入
+4. Session 文件权限为 `0600`，仅当前用户可读
+5. Session 24 小时后自动过期，过期后需要重新输入密码
+6. Session 文件被复制到其他机器后无法解密（机器本地密钥不同）
+7. 运行 `kf lock` 可以立即清除 session
 
 为什么这样设计：
 - `kf setup` 不再把主密码写进 AI 工具的配置文件
-- 配置文件泄漏时，不会带出一份可用密码
+- 即使 session 文件被读取，也无法直接获得明文密码
 - AI 工具（MCP）和 CLI 共用同一套 session
 - 如果 session 过期或不存在，`kf serve` 会返回明确的错误信息
 
@@ -557,9 +562,9 @@ KeyFlow 使用本地 session 文件来避免重复输入主密码：
 ## 支持的 Provider
 
 当前支持自动推断或默认管理地址的常见 provider 包括：
-- Google
+- Google（含 GCP、Firebase、Maps）
 - GitHub
-- Cloudflare
+- Cloudflare（含 Workers、R2、Pages、DNS）
 - AWS
 - Azure
 - OpenAI
@@ -575,6 +580,10 @@ KeyFlow 使用本地 session 文件来避免重复输入主密码：
 - Docker
 - npm
 - PyPI
+- Fly.io
+- Heroku
+- Netlify
+- Railway
 
 更多产品边界见 [docs/product-architecture.md](/Users/likai/personage/pachong/keyflow/docs/product-architecture.md)。
 路线优先级见 [docs/product-roadmap.md](/Users/likai/personage/pachong/keyflow/docs/product-roadmap.md)。

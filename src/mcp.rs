@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::Command;
 
 use crate::db::Database;
-use crate::models::ListFilter;
+use crate::models::{self, ListFilter};
 
 /// MCP Server over stdio (JSON-RPC 2.0 with Content-Length headers)
 pub fn serve(db: &Database) -> Result<()> {
@@ -351,30 +351,7 @@ fn handle_tools_call(db: &Database, params: &Value) -> Result<Value> {
 // ─── Helpers ───
 
 fn secret_to_metadata(entry: &crate::models::SecretEntry) -> Value {
-    json!({
-        "name": entry.name,
-        "env_var": entry.env_var,
-        "provider": entry.provider,
-        "account_name": entry.account_name,
-        "org_name": entry.org_name,
-        "description": entry.description,
-        "source": entry.source,
-        "environment": entry.environment,
-        "permission_profile": entry.permission_profile,
-        "last_verified_at": entry
-            .last_verified_at
-            .map(|d| d.format("%Y-%m-%d").to_string()),
-        "metadata_gaps": entry.metadata_gaps(),
-        "source_quality": entry.source_quality().to_string(),
-        "scopes": entry.scopes,
-        "projects": entry.projects,
-        "key_group": entry.key_group,
-        "apply_url": entry.apply_url,
-        "status": entry.status().to_string(),
-        "expires_at": entry.expires_at.map(|d| d.to_rfc3339()),
-        "last_used_at": entry.last_used_at.map(|d| d.to_rfc3339()),
-        "usage_hint": format!("Use via environment variable: {}", entry.env_var),
-    })
+    models::secret_to_json(entry)
 }
 
 fn get_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
@@ -444,78 +421,20 @@ fn tool_check_health(db: &Database) -> Result<Value> {
         ..Default::default()
     })?;
 
-    let mut expired = Vec::new();
-    let mut expiring_soon = Vec::new();
-    let mut unused_30d = Vec::new();
-    let mut inactive = Vec::new();
-    let mut metadata_review = Vec::new();
-
-    let now = chrono::Utc::now();
-
-    for entry in &entries {
-        if !entry.is_active {
-            inactive.push(secret_to_metadata(entry));
-            continue;
-        }
-        match entry.status() {
-            crate::models::KeyStatus::Expired => expired.push(secret_to_metadata(entry)),
-            crate::models::KeyStatus::ExpiringSoon => expiring_soon.push(secret_to_metadata(entry)),
-            _ => {}
-        }
-        if entry.is_unused_for_days(now, 30) {
-            unused_30d.push(secret_to_metadata(entry));
-        }
-        if entry.has_metadata_gaps() {
-            metadata_review.push(secret_to_metadata(entry));
-        }
-    }
-
-    let duplicates = crate::models::find_duplicate_groups(&entries);
-    let duplicate_groups: Vec<Value> = duplicates
-        .iter()
-        .map(|g| json!({"env_var": g.env_var, "names": g.names}))
-        .collect();
-
-    let active_entries: Vec<_> = entries.iter().filter(|e| e.is_active).collect();
-    let mut source_quality: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
-    for e in &active_entries {
-        *source_quality
-            .entry(e.source_quality().to_string())
-            .or_insert(0) += 1;
-    }
-
-    let unverified_30 = active_entries
-        .iter()
-        .filter(|e| {
-            let d = e.unverified_days(now);
-            (30..60).contains(&d)
-        })
-        .count();
-    let unverified_60 = active_entries
-        .iter()
-        .filter(|e| {
-            let d = e.unverified_days(now);
-            (60..90).contains(&d)
-        })
-        .count();
-    let unverified_90 = active_entries
-        .iter()
-        .filter(|e| e.unverified_days(now) >= 90)
-        .count();
+    let h = models::HealthReport::from_entries(&entries);
 
     Ok(json!({
-        "expired": { "count": expired.len(), "keys": expired },
-        "expiring_soon": { "count": expiring_soon.len(), "keys": expiring_soon },
-        "unused_30_days": { "count": unused_30d.len(), "keys": unused_30d },
-        "inactive": { "count": inactive.len(), "keys": inactive },
-        "metadata_review": { "count": metadata_review.len(), "keys": metadata_review },
-        "duplicates": { "count": duplicate_groups.len(), "groups": duplicate_groups },
-        "source_quality": source_quality,
+        "expired": { "count": h.expired.len(), "keys": h.expired },
+        "expiring_soon": { "count": h.expiring_soon.len(), "keys": h.expiring_soon },
+        "unused_30_days": { "count": h.unused_30d.len(), "keys": h.unused_30d },
+        "inactive": { "count": h.inactive.len(), "keys": h.inactive },
+        "metadata_review": { "count": h.metadata_review.len(), "keys": h.metadata_review },
+        "duplicates": { "count": h.duplicate_groups.len(), "groups": h.duplicate_groups },
+        "source_quality": h.source_quality,
         "unverified": {
-            "30_59_days": unverified_30,
-            "60_89_days": unverified_60,
-            "90_plus_days": unverified_90,
+            "30_59_days": h.unverified_30,
+            "60_89_days": h.unverified_60,
+            "90_plus_days": h.unverified_90,
         },
     }))
 }
@@ -646,6 +565,23 @@ fn tool_deploy_project_secrets(db: &Database, args: &Value) -> Result<Value> {
     }))
 }
 
+/// Validate that an env var name contains only safe characters.
+fn validate_env_var_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("Environment variable name cannot be empty");
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        bail!(
+            "Invalid environment variable name '{}': only [A-Za-z0-9_] allowed",
+            name
+        );
+    }
+    Ok(())
+}
+
 /// Execute the actual deployment command.
 /// Value is piped via stdin to avoid leaking in `ps` output.
 fn run_deploy(
@@ -656,6 +592,9 @@ fn run_deploy(
     app: Option<&str>,
     working_dir: Option<&str>,
 ) -> Result<Value> {
+    // Reject env var names with shell-unsafe characters
+    validate_env_var_name(env_var)?;
+
     // Check that the target CLI tool is installed
     let cli_name = match target {
         "cloudflare-workers" => "wrangler",
@@ -701,36 +640,24 @@ fn run_deploy(
         }
         "heroku" => {
             // heroku config:set ENV_VAR=value [--app <app>]
-            // Use a temp env var to avoid value in CLI args visible via `ps`
-            let mut c = Command::new("sh");
-            c.args([
-                "-c",
-                &format!(
-                    "printf '%s' \"$__KF_VAL\" | heroku config:set {}=\"$(cat)\"{}",
-                    env_var,
-                    app.map(|a| format!(" --app {}", a)).unwrap_or_default()
-                ),
-            ]);
-            c.env("__KF_VAL", value);
+            // Value is passed as part of the arg to avoid shell interpretation
+            let mut c = Command::new("heroku");
+            c.args(["config:set", &format!("{}={}", env_var, value)]);
+            if let Some(a) = app {
+                c.args(["--app", a]);
+            }
             c
         }
         "netlify" => {
-            // netlify env:set ENV_VAR --value $val
-            // Pass value via env var to keep it out of `ps`
-            let mut c = Command::new("sh");
-            c.args(["-c", &format!("netlify env:set {} \"$__KF_VAL\"", env_var)]);
-            c.env("__KF_VAL", value);
+            // netlify env:set ENV_VAR value
+            let mut c = Command::new("netlify");
+            c.args(["env:set", env_var, value]);
             c
         }
         "railway" => {
             // railway variables set ENV_VAR=value
-            // Pass value via env var to keep it out of `ps`
-            let mut c = Command::new("sh");
-            c.args([
-                "-c",
-                &format!("railway variables set {}=\"$__KF_VAL\"", env_var),
-            ]);
-            c.env("__KF_VAL", value);
+            let mut c = Command::new("railway");
+            c.args(["variables", "set", &format!("{}={}", env_var, value)]);
             c
         }
         _ => unreachable!(),
@@ -767,14 +694,12 @@ fn run_deploy(
         }
     };
 
-    // For stdin-based targets, write the value
-    if matches!(target, "cloudflare-workers" | "vercel" | "fly") {
-        if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
-            let _ = stdin.write_all(value.as_bytes());
-            let _ = stdin.write_all(b"\n");
-            // stdin is dropped here, closing the pipe
-        }
+    // For stdin-based targets, write the value and close the pipe
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(value.as_bytes());
+        let _ = stdin.write_all(b"\n");
+        // stdin is dropped here, closing the pipe
     }
 
     let output = child.wait_with_output()?;
@@ -815,6 +740,7 @@ fn get_install_hint(target: &str) -> &'static str {
 /// Add a new secret to the vault.
 fn tool_add_key(db: &Database, args: &Value) -> Result<Value> {
     let env_var = require_str(args, "env_var")?;
+    validate_env_var_name(env_var)?;
     let value = require_str(args, "value")?;
     let provider = get_str(args, "provider").unwrap_or("");
     let description = get_str(args, "description").unwrap_or("");
@@ -888,43 +814,9 @@ fn tool_add_key(db: &Database, args: &Value) -> Result<Value> {
 }
 
 fn guess_provider(env_var: &str) -> String {
-    let upper = env_var.to_uppercase();
-    let providers = [
-        ("GOOGLE", "google"),
-        ("GCP", "google"),
-        ("GITHUB", "github"),
-        ("GH_", "github"),
-        ("CLOUDFLARE", "cloudflare"),
-        ("CF_", "cloudflare"),
-        ("WRANGLER", "cloudflare"),
-        ("AWS", "aws"),
-        ("AZURE", "azure"),
-        ("OPENAI", "openai"),
-        ("ANTHROPIC", "anthropic"),
-        ("CLAUDE", "anthropic"),
-        ("STRIPE", "stripe"),
-        ("VERCEL", "vercel"),
-        ("SUPABASE", "supabase"),
-        ("FIREBASE", "firebase"),
-        ("TWILIO", "twilio"),
-        ("SENDGRID", "sendgrid"),
-        ("SLACK", "slack"),
-        ("DOCKER", "docker"),
-        ("NPM", "npm"),
-        ("PYPI", "pypi"),
-        ("FLY_", "fly"),
-        ("FLYIO", "fly"),
-        ("HEROKU", "heroku"),
-        ("NETLIFY", "netlify"),
-        ("RAILWAY", "railway"),
-        ("R2_", "cloudflare"),
-    ];
-    for (prefix, provider) in providers {
-        if upper.contains(prefix) {
-            return provider.to_string();
-        }
-    }
-    "other".to_string()
+    models::infer_provider(env_var)
+        .unwrap_or("other")
+        .to_string()
 }
 
 /// Generate .env snippet for a project or group.

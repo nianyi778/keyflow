@@ -685,3 +685,155 @@ pub const TEMPLATES: &[KeyTemplate] = &[
         apply_url: "https://dashboard.stripe.com/settings/connect",
     },
 ];
+
+/// Convert a SecretEntry to a JSON metadata representation (no secret value).
+/// Shared by MCP server and Web dashboard.
+pub fn secret_to_json(entry: &SecretEntry) -> serde_json::Value {
+    serde_json::json!({
+        "name": entry.name,
+        "env_var": entry.env_var,
+        "provider": entry.provider,
+        "account_name": entry.account_name,
+        "org_name": entry.org_name,
+        "description": entry.description,
+        "source": entry.source,
+        "environment": entry.environment,
+        "permission_profile": entry.permission_profile,
+        "last_verified_at": entry
+            .last_verified_at
+            .map(|d| d.format("%Y-%m-%d").to_string()),
+        "metadata_gaps": entry.metadata_gaps(),
+        "source_quality": entry.source_quality().to_string(),
+        "scopes": entry.scopes,
+        "projects": entry.projects,
+        "key_group": entry.key_group,
+        "apply_url": entry.apply_url,
+        "status": entry.status().to_string(),
+        "expires_at": entry.expires_at.map(|d| d.format("%Y-%m-%d").to_string()),
+        "last_used_at": entry.last_used_at.map(|d| d.to_rfc3339()),
+        "usage_hint": format!("Use via environment variable: {}", entry.env_var),
+    })
+}
+
+/// Health report computed from a list of secrets.
+/// Shared by MCP server and Web dashboard.
+pub struct HealthReport {
+    pub expired: Vec<serde_json::Value>,
+    pub expiring_soon: Vec<serde_json::Value>,
+    pub unused_30d: Vec<serde_json::Value>,
+    pub inactive: Vec<serde_json::Value>,
+    pub metadata_review: Vec<serde_json::Value>,
+    pub duplicate_groups: Vec<serde_json::Value>,
+    pub source_quality: std::collections::HashMap<String, usize>,
+    pub unverified_30: usize,
+    pub unverified_60: usize,
+    pub unverified_90: usize,
+}
+
+impl HealthReport {
+    pub fn from_entries(entries: &[SecretEntry]) -> Self {
+        let now = chrono::Utc::now();
+
+        let mut expired = Vec::new();
+        let mut expiring_soon = Vec::new();
+        let mut unused_30d = Vec::new();
+        let mut inactive = Vec::new();
+        let mut metadata_review = Vec::new();
+
+        for entry in entries {
+            if !entry.is_active {
+                inactive.push(secret_to_json(entry));
+                continue;
+            }
+            match entry.status() {
+                KeyStatus::Expired => expired.push(secret_to_json(entry)),
+                KeyStatus::ExpiringSoon => expiring_soon.push(secret_to_json(entry)),
+                _ => {}
+            }
+            if entry.is_unused_for_days(now, 30) {
+                unused_30d.push(secret_to_json(entry));
+            }
+            if entry.has_metadata_gaps() {
+                metadata_review.push(secret_to_json(entry));
+            }
+        }
+
+        let duplicates = find_duplicate_groups(entries);
+        let duplicate_groups: Vec<serde_json::Value> = duplicates
+            .iter()
+            .map(|g| serde_json::json!({"env_var": g.env_var, "names": g.names}))
+            .collect();
+
+        let active_entries: Vec<_> = entries.iter().filter(|e| e.is_active).collect();
+        let mut source_quality: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for e in &active_entries {
+            *source_quality
+                .entry(e.source_quality().to_string())
+                .or_insert(0) += 1;
+        }
+
+        let unverified_30 = active_entries
+            .iter()
+            .filter(|e| (30..60).contains(&e.unverified_days(now)))
+            .count();
+        let unverified_60 = active_entries
+            .iter()
+            .filter(|e| (60..90).contains(&e.unverified_days(now)))
+            .count();
+        let unverified_90 = active_entries
+            .iter()
+            .filter(|e| e.unverified_days(now) >= 90)
+            .count();
+
+        Self {
+            expired,
+            expiring_soon,
+            unused_30d,
+            inactive,
+            metadata_review,
+            duplicate_groups,
+            source_quality,
+            unverified_30,
+            unverified_60,
+            unverified_90,
+        }
+    }
+}
+
+/// Infer provider from environment variable name.
+/// Shared by MCP add_key and CLI import.
+pub fn infer_provider(env_var: &str) -> Option<&'static str> {
+    let upper = env_var.to_uppercase();
+    let patterns: &[(&[&str], &str)] = &[
+        (&["GOOGLE", "GCLOUD", "GCP", "FIREBASE"], "google"),
+        (&["GITHUB", "GH_"], "github"),
+        (&["CLOUDFLARE", "CF_", "WRANGLER", "R2_"], "cloudflare"),
+        (&["AWS_", "AMAZON"], "aws"),
+        (&["AZURE_"], "azure"),
+        (&["OPENAI"], "openai"),
+        (&["ANTHROPIC", "CLAUDE"], "anthropic"),
+        (&["STRIPE"], "stripe"),
+        (&["VERCEL"], "vercel"),
+        (&["SUPABASE"], "supabase"),
+        (&["TWILIO"], "twilio"),
+        (&["RESEND"], "resend"),
+        (&["SENDGRID"], "sendgrid"),
+        (&["SLACK"], "slack"),
+        (&["DOCKER"], "docker"),
+        (&["NPM_"], "npm"),
+        (&["PYPI"], "pypi"),
+        (&["FLY_", "FLYIO"], "fly"),
+        (&["HEROKU"], "heroku"),
+        (&["NETLIFY"], "netlify"),
+        (&["RAILWAY"], "railway"),
+    ];
+    for (keywords, provider) in patterns {
+        for kw in *keywords {
+            if upper.contains(kw) {
+                return Some(provider);
+            }
+        }
+    }
+    None
+}
