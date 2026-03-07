@@ -575,6 +575,25 @@ cargo install --path .
 # 会同时安装 `keyflow` 和 `kf`
 ```
 
+## 发布流程
+
+当前仓库的 release 流程是自动衔接的：
+
+1. 在 `master` 合入版本号变更，例如把 `Cargo.toml` 从 `0.4.1` 改到 `0.4.2`
+2. `tag-on-version-bump.yml` 会在 push 后自动检查版本是否变化
+3. 如果检测到新版本且远端还没有对应 tag，会自动创建并 push `v0.4.2`
+4. `release.yml` 会被这个 tag 触发，构建发布产物、创建 GitHub Release，并更新 Homebrew Formula
+
+也就是说，正常情况下只需要提交并推送版本号变更，不需要再手工执行：
+
+```bash
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+发布前检查见：`docs/release-checklist.md`  
+最近一次发布演练记录见：`docs/release-rehearsal-2026-03-07.md`
+
 ## License
 
 [MIT](LICENSE) - Copyright (c) 2026 nianyi778
