@@ -1,24 +1,24 @@
 class Keyflow < Formula
   desc "Developer key vault for storing, finding, and reusing API keys"
   homepage "https://github.com/nianyi778/keyflow"
-  version "0.3.1"
+  version "0.3.2"
   license "MIT"
 
   on_macos do
     on_arm do
       url "https://github.com/nianyi778/keyflow/releases/download/v#{version}/keyflow-aarch64-apple-darwin.tar.gz"
-      sha256 "3b7e2b27599e1f12354b000eeaea0056b81d9f89b19827b0afec1482dd6b6637"
+      sha256 "dcb0c652fa5e1840ea9bb3e02c298205cc73b180ca91fae74e9c216972da994a"
     end
     on_intel do
       url "https://github.com/nianyi778/keyflow/releases/download/v#{version}/keyflow-x86_64-apple-darwin.tar.gz"
-      sha256 "da457222dfddaee41df18be2164995dac0ca18af33fba190f73c8fdeade2095d"
+      sha256 "c12753706ccdc276d4e5a7bb690d2b05fcb0cb9b28b46e13f031393bbcb37613"
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/nianyi778/keyflow/releases/download/v#{version}/keyflow-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "34d1bc637877186a13e3fc472e3a92221112ca360081f2bcbbd9374d34a486f8"
+      sha256 "5a28fada87d8880f400bc25bc1b54036b1c4e431257916b935f5bbbe4e786dd6"
     end
   end
 
