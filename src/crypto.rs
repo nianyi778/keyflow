@@ -21,14 +21,6 @@ impl Crypto {
         Ok(Self { cipher })
     }
 
-    /// Create a Crypto instance from a raw 32-byte key (no KDF).
-    /// Used for session encryption where the key is machine-derived.
-    pub fn new_from_raw_key(raw_key: &[u8; KEY_LEN]) -> Result<Self> {
-        let key = Key::<Aes256Gcm>::from_slice(raw_key);
-        let cipher = Aes256Gcm::new(key);
-        Ok(Self { cipher })
-    }
-
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
         let mut nonce_bytes = [0u8; NONCE_LEN];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);

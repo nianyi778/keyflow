@@ -1,6 +1,6 @@
 [package]
 name = "keyflow"
-version = "0.3.2"
+version = "0.4.1"
 edition = "2021"
 description = "Developer key vault for storing, finding, and reusing API keys across projects"
 license = "MIT"
@@ -22,9 +22,6 @@ comfy-table = "7"
 base64 = "0.22"
 dirs = "5"
 anyhow = "1"
-tiny_http = "0.12"
-ratatui = "0.29"
-crossterm = "0.28"
 atty = "0.2"
 walkdir = "2"
 

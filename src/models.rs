@@ -22,7 +22,6 @@ pub struct SecretEntry {
     pub last_used_at: Option<DateTime<Utc>>,
     pub last_verified_at: Option<DateTime<Utc>>,
     pub is_active: bool,
-    pub key_group: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +50,7 @@ impl SecretEntry {
         if !self.is_active {
             return KeyStatus::Inactive;
         }
+
         match self.expires_at {
             Some(exp) => {
                 let now = Utc::now();
@@ -103,20 +103,17 @@ impl SecretEntry {
     }
 
     pub fn source_quality(&self) -> SourceQuality {
-        let s = self.source.trim();
-        if s.is_empty() {
+        let source = self.source.trim();
+        if source.is_empty() {
             return SourceQuality::Unknown;
         }
-        if s.starts_with("template:") {
-            return SourceQuality::Template;
-        }
-        if s.starts_with("import:") {
+        if source.starts_with("import:") {
             return SourceQuality::Import;
         }
-        if s.starts_with("mcp:") {
+        if source.starts_with("mcp:") {
             return SourceQuality::Mcp;
         }
-        if s.starts_with("manual:") || s == "manual" {
+        if source.starts_with("manual:") || source == "manual" {
             return SourceQuality::Manual;
         }
         SourceQuality::Other
@@ -130,7 +127,6 @@ impl SecretEntry {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SourceQuality {
-    Template,
     Import,
     Manual,
     Mcp,
@@ -141,7 +137,6 @@ pub enum SourceQuality {
 impl std::fmt::Display for SourceQuality {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SourceQuality::Template => write!(f, "template"),
             SourceQuality::Import => write!(f, "import"),
             SourceQuality::Manual => write!(f, "manual"),
             SourceQuality::Mcp => write!(f, "mcp"),
@@ -162,12 +157,13 @@ pub fn find_duplicate_groups(entries: &[SecretEntry]) -> Vec<DuplicateGroup> {
                 .push(entry);
         }
     }
+
     let mut groups = Vec::new();
     for (env_var, keys) in &by_env_var {
         if keys.len() > 1 {
             groups.push(DuplicateGroup {
                 env_var: env_var.clone(),
-                names: keys.iter().map(|k| k.name.clone()).collect(),
+                names: keys.iter().map(|key| key.name.clone()).collect(),
             });
         }
     }
@@ -182,10 +178,12 @@ pub fn find_duplicate_groups(entries: &[SecretEntry]) -> Vec<DuplicateGroup> {
                 .push(entry);
         }
     }
+
     for (provider, keys) in &by_provider {
         if keys.len() <= 1 {
             continue;
         }
+
         let mut seen_purposes: std::collections::HashMap<String, Vec<&str>> =
             std::collections::HashMap::new();
         for key in keys {
@@ -196,15 +194,18 @@ pub fn find_duplicate_groups(entries: &[SecretEntry]) -> Vec<DuplicateGroup> {
             let purpose = purpose.trim_matches('_').to_string();
             seen_purposes.entry(purpose).or_default().push(&key.name);
         }
+
         for names in seen_purposes.values() {
             if names.len() > 1 {
-                let already_in = groups
-                    .iter()
-                    .any(|g| names.iter().all(|n| g.names.contains(&n.to_string())));
+                let already_in = groups.iter().any(|group| {
+                    names
+                        .iter()
+                        .all(|name| group.names.contains(&name.to_string()))
+                });
                 if !already_in {
                     groups.push(DuplicateGroup {
-                        env_var: format!("{}:overlap", provider),
-                        names: names.iter().map(|n| n.to_string()).collect(),
+                        env_var: format!("{provider}:overlap"),
+                        names: names.iter().map(|name| name.to_string()).collect(),
                     });
                 }
             }
@@ -214,7 +215,7 @@ pub fn find_duplicate_groups(entries: &[SecretEntry]) -> Vec<DuplicateGroup> {
     groups
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DuplicateGroup {
     pub env_var: String,
     pub names: Vec<String>,
@@ -224,7 +225,6 @@ pub struct DuplicateGroup {
 pub struct ListFilter {
     pub provider: Option<String>,
     pub project: Option<String>,
-    pub group: Option<String>,
     pub expiring: bool,
     pub inactive: bool,
 }
@@ -234,460 +234,6 @@ pub struct AppConfig {
     pub salt: String,
 }
 
-/// Predefined template for common service key bundles
-#[derive(Debug, Clone)]
-pub struct KeyTemplate {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub provider: &'static str,
-    pub keys: &'static [TemplateKey],
-    pub apply_url: &'static str,
-}
-
-#[derive(Debug, Clone)]
-pub struct TemplateKey {
-    pub env_var: &'static str,
-    pub description: &'static str,
-    pub is_secret: bool,
-}
-
-pub const TEMPLATES: &[KeyTemplate] = &[
-    KeyTemplate {
-        name: "google-oauth",
-        description: "Google OAuth 2.0 (Client ID + Secret + Redirect URI)",
-        provider: "google",
-        keys: &[
-            TemplateKey {
-                env_var: "GOOGLE_CLIENT_ID",
-                description: "OAuth Client ID",
-                is_secret: false,
-            },
-            TemplateKey {
-                env_var: "GOOGLE_CLIENT_SECRET",
-                description: "OAuth Client Secret",
-                is_secret: true,
-            },
-            TemplateKey {
-                env_var: "GOOGLE_REDIRECT_URI",
-                description: "OAuth Redirect URI",
-                is_secret: false,
-            },
-        ],
-        apply_url: "https://console.cloud.google.com/apis/credentials",
-    },
-    KeyTemplate {
-        name: "github-oauth",
-        description: "GitHub OAuth App (Client ID + Secret)",
-        provider: "github",
-        keys: &[
-            TemplateKey {
-                env_var: "GITHUB_CLIENT_ID",
-                description: "OAuth App Client ID",
-                is_secret: false,
-            },
-            TemplateKey {
-                env_var: "GITHUB_CLIENT_SECRET",
-                description: "OAuth App Client Secret",
-                is_secret: true,
-            },
-        ],
-        apply_url: "https://github.com/settings/developers",
-    },
-    KeyTemplate {
-        name: "github-token",
-        description: "GitHub Personal Access Token",
-        provider: "github",
-        keys: &[TemplateKey {
-            env_var: "GITHUB_TOKEN",
-            description: "Personal Access Token",
-            is_secret: true,
-        }],
-        apply_url: "https://github.com/settings/tokens",
-    },
-    KeyTemplate {
-        name: "cloudflare-workers",
-        description: "Cloudflare Workers (API Token + Account ID)",
-        provider: "cloudflare",
-        keys: &[
-            TemplateKey {
-                env_var: "CF_API_TOKEN",
-                description: "API Token",
-                is_secret: true,
-            },
-            TemplateKey {
-                env_var: "CF_ACCOUNT_ID",
-                description: "Account ID",
-                is_secret: false,
-            },
-        ],
-        apply_url: "https://dash.cloudflare.com/profile/api-tokens",
-    },
-    KeyTemplate {
-        name: "cloudflare-r2",
-        description: "Cloudflare R2 Storage (Access Key + Secret + Endpoint)",
-        provider: "cloudflare",
-        keys: &[
-            TemplateKey {
-                env_var: "R2_ACCESS_KEY_ID",
-                description: "R2 Access Key ID",
-                is_secret: false,
-            },
-            TemplateKey {
-                env_var: "R2_SECRET_ACCESS_KEY",
-                description: "R2 Secret Access Key",
-                is_secret: true,
-            },
-            TemplateKey {
-                env_var: "R2_ENDPOINT",
-                description: "R2 Endpoint URL",
-                is_secret: false,
-            },
-        ],
-        apply_url: "https://dash.cloudflare.com/?to=/:account/r2/api-tokens",
-    },
-    KeyTemplate {
-        name: "aws-iam",
-        description: "AWS IAM (Access Key + Secret + Region)",
-        provider: "aws",
-        keys: &[
-            TemplateKey {
-                env_var: "AWS_ACCESS_KEY_ID",
-                description: "Access Key ID",
-                is_secret: false,
-            },
-            TemplateKey {
-                env_var: "AWS_SECRET_ACCESS_KEY",
-                description: "Secret Access Key",
-                is_secret: true,
-            },
-            TemplateKey {
-                env_var: "AWS_DEFAULT_REGION",
-                description: "Default Region",
-                is_secret: false,
-            },
-        ],
-        apply_url: "https://console.aws.amazon.com/iam/home#/security_credentials",
-    },
-    KeyTemplate {
-        name: "stripe",
-        description: "Stripe (Publishable Key + Secret Key + Webhook Secret)",
-        provider: "stripe",
-        keys: &[
-            TemplateKey {
-                env_var: "STRIPE_PUBLISHABLE_KEY",
-                description: "Publishable Key (pk_)",
-                is_secret: false,
-            },
-            TemplateKey {
-                env_var: "STRIPE_SECRET_KEY",
-                description: "Secret Key (sk_)",
-                is_secret: true,
-            },
-            TemplateKey {
-                env_var: "STRIPE_WEBHOOK_SECRET",
-                description: "Webhook Signing Secret (whsec_)",
-                is_secret: true,
-            },
-        ],
-        apply_url: "https://dashboard.stripe.com/apikeys",
-    },
-    KeyTemplate {
-        name: "supabase",
-        description: "Supabase (URL + Anon Key + Service Role Key)",
-        provider: "supabase",
-        keys: &[
-            TemplateKey {
-                env_var: "SUPABASE_URL",
-                description: "Project URL",
-                is_secret: false,
-            },
-            TemplateKey {
-                env_var: "SUPABASE_ANON_KEY",
-                description: "Anon/Public Key",
-                is_secret: false,
-            },
-            TemplateKey {
-                env_var: "SUPABASE_SERVICE_ROLE_KEY",
-                description: "Service Role Key (admin)",
-                is_secret: true,
-            },
-        ],
-        apply_url: "https://supabase.com/dashboard/project/_/settings/api",
-    },
-    KeyTemplate {
-        name: "openai",
-        description: "OpenAI API Key + Org ID",
-        provider: "openai",
-        keys: &[
-            TemplateKey {
-                env_var: "OPENAI_API_KEY",
-                description: "API Key",
-                is_secret: true,
-            },
-            TemplateKey {
-                env_var: "OPENAI_ORG_ID",
-                description: "Organization ID",
-                is_secret: false,
-            },
-        ],
-        apply_url: "https://platform.openai.com/api-keys",
-    },
-    KeyTemplate {
-        name: "anthropic",
-        description: "Anthropic API Key",
-        provider: "anthropic",
-        keys: &[TemplateKey {
-            env_var: "ANTHROPIC_API_KEY",
-            description: "API Key",
-            is_secret: true,
-        }],
-        apply_url: "https://console.anthropic.com/settings/keys",
-    },
-    KeyTemplate {
-        name: "vercel",
-        description: "Vercel Token + Team ID",
-        provider: "vercel",
-        keys: &[
-            TemplateKey {
-                env_var: "VERCEL_TOKEN",
-                description: "Auth Token",
-                is_secret: true,
-            },
-            TemplateKey {
-                env_var: "VERCEL_TEAM_ID",
-                description: "Team ID",
-                is_secret: false,
-            },
-        ],
-        apply_url: "https://vercel.com/account/tokens",
-    },
-    KeyTemplate {
-        name: "firebase",
-        description: "Firebase (API Key + Auth Domain + Project ID)",
-        provider: "firebase",
-        keys: &[
-            TemplateKey {
-                env_var: "FIREBASE_API_KEY",
-                description: "Web API Key",
-                is_secret: false,
-            },
-            TemplateKey {
-                env_var: "FIREBASE_AUTH_DOMAIN",
-                description: "Auth Domain",
-                is_secret: false,
-            },
-            TemplateKey {
-                env_var: "FIREBASE_PROJECT_ID",
-                description: "Project ID",
-                is_secret: false,
-            },
-        ],
-        apply_url: "https://console.firebase.google.com/project/_/settings/general",
-    },
-    KeyTemplate {
-        name: "sendgrid",
-        description: "SendGrid API Key + From Email",
-        provider: "sendgrid",
-        keys: &[
-            TemplateKey {
-                env_var: "SENDGRID_API_KEY",
-                description: "API Key",
-                is_secret: true,
-            },
-            TemplateKey {
-                env_var: "SENDGRID_FROM_EMAIL",
-                description: "Verified Sender Email",
-                is_secret: false,
-            },
-        ],
-        apply_url: "https://app.sendgrid.com/settings/api_keys",
-    },
-    KeyTemplate {
-        name: "resend",
-        description: "Resend API Key + Sending Domain",
-        provider: "resend",
-        keys: &[
-            TemplateKey {
-                env_var: "RESEND_API_KEY",
-                description: "API Key",
-                is_secret: true,
-            },
-            TemplateKey {
-                env_var: "RESEND_DOMAIN",
-                description: "Verified sending domain",
-                is_secret: false,
-            },
-        ],
-        apply_url: "https://resend.com/api-keys",
-    },
-    KeyTemplate {
-        name: "docker",
-        description: "Docker Hub (Username + Token)",
-        provider: "docker",
-        keys: &[
-            TemplateKey {
-                env_var: "DOCKER_USERNAME",
-                description: "Docker Hub Username",
-                is_secret: false,
-            },
-            TemplateKey {
-                env_var: "DOCKER_TOKEN",
-                description: "Access Token",
-                is_secret: true,
-            },
-        ],
-        apply_url: "https://hub.docker.com/settings/security",
-    },
-    KeyTemplate {
-        name: "google-cloud-sa",
-        description: "Google Cloud Service Account (Project ID + Client Email + Private Key)",
-        provider: "google",
-        keys: &[
-            TemplateKey {
-                env_var: "GCP_PROJECT_ID",
-                description: "Google Cloud Project ID",
-                is_secret: false,
-            },
-            TemplateKey {
-                env_var: "GCP_CLIENT_EMAIL",
-                description: "Service Account Email",
-                is_secret: false,
-            },
-            TemplateKey {
-                env_var: "GCP_PRIVATE_KEY",
-                description: "Service Account Private Key (PEM)",
-                is_secret: true,
-            },
-        ],
-        apply_url: "https://console.cloud.google.com/iam-admin/serviceaccounts",
-    },
-    KeyTemplate {
-        name: "google-maps",
-        description: "Google Maps API Key + Map ID",
-        provider: "google",
-        keys: &[
-            TemplateKey {
-                env_var: "GOOGLE_MAPS_API_KEY",
-                description: "Maps API Key",
-                is_secret: true,
-            },
-            TemplateKey {
-                env_var: "GOOGLE_MAPS_MAP_ID",
-                description: "Map ID",
-                is_secret: false,
-            },
-        ],
-        apply_url: "https://console.cloud.google.com/apis/credentials",
-    },
-    KeyTemplate {
-        name: "github-app",
-        description: "GitHub App (App ID + Private Key + Installation ID)",
-        provider: "github",
-        keys: &[
-            TemplateKey {
-                env_var: "GITHUB_APP_ID",
-                description: "GitHub App ID",
-                is_secret: false,
-            },
-            TemplateKey {
-                env_var: "GITHUB_APP_PRIVATE_KEY",
-                description: "App Private Key (PEM)",
-                is_secret: true,
-            },
-            TemplateKey {
-                env_var: "GITHUB_APP_INSTALLATION_ID",
-                description: "Installation ID",
-                is_secret: false,
-            },
-        ],
-        apply_url: "https://github.com/settings/apps",
-    },
-    KeyTemplate {
-        name: "cloudflare-pages",
-        description: "Cloudflare Pages (API Token + Account ID)",
-        provider: "cloudflare",
-        keys: &[
-            TemplateKey {
-                env_var: "CF_PAGES_API_TOKEN",
-                description: "Pages API Token",
-                is_secret: true,
-            },
-            TemplateKey {
-                env_var: "CF_PAGES_ACCOUNT_ID",
-                description: "Account ID",
-                is_secret: false,
-            },
-        ],
-        apply_url: "https://dash.cloudflare.com/profile/api-tokens",
-    },
-    KeyTemplate {
-        name: "cloudflare-dns",
-        description: "Cloudflare DNS (API Token + Zone ID)",
-        provider: "cloudflare",
-        keys: &[
-            TemplateKey {
-                env_var: "CF_DNS_API_TOKEN",
-                description: "DNS API Token",
-                is_secret: true,
-            },
-            TemplateKey {
-                env_var: "CF_ZONE_ID",
-                description: "Zone ID",
-                is_secret: false,
-            },
-        ],
-        apply_url: "https://dash.cloudflare.com/profile/api-tokens",
-    },
-    KeyTemplate {
-        name: "openai-org",
-        description: "OpenAI Organization (API Key + Org ID + Project ID)",
-        provider: "openai",
-        keys: &[
-            TemplateKey {
-                env_var: "OPENAI_API_KEY",
-                description: "API Key",
-                is_secret: true,
-            },
-            TemplateKey {
-                env_var: "OPENAI_ORG_ID",
-                description: "Organization ID",
-                is_secret: false,
-            },
-            TemplateKey {
-                env_var: "OPENAI_PROJECT_ID",
-                description: "Project ID",
-                is_secret: false,
-            },
-        ],
-        apply_url: "https://platform.openai.com/api-keys",
-    },
-    KeyTemplate {
-        name: "stripe-connect",
-        description: "Stripe Connect (Secret Key + Connect Client ID + Webhook Secret)",
-        provider: "stripe",
-        keys: &[
-            TemplateKey {
-                env_var: "STRIPE_SECRET_KEY",
-                description: "Secret Key (sk_)",
-                is_secret: true,
-            },
-            TemplateKey {
-                env_var: "STRIPE_CONNECT_CLIENT_ID",
-                description: "Connect Platform Client ID (ca_)",
-                is_secret: false,
-            },
-            TemplateKey {
-                env_var: "STRIPE_CONNECT_WEBHOOK_SECRET",
-                description: "Connect Webhook Signing Secret",
-                is_secret: true,
-            },
-        ],
-        apply_url: "https://dashboard.stripe.com/settings/connect",
-    },
-];
-
-/// Convert a SecretEntry to a JSON metadata representation (no secret value).
-/// Shared by MCP server and Web dashboard.
 pub fn secret_to_json(entry: &SecretEntry) -> serde_json::Value {
     serde_json::json!({
         "name": entry.name,
@@ -699,24 +245,22 @@ pub fn secret_to_json(entry: &SecretEntry) -> serde_json::Value {
         "source": entry.source,
         "environment": entry.environment,
         "permission_profile": entry.permission_profile,
-        "last_verified_at": entry
-            .last_verified_at
-            .map(|d| d.format("%Y-%m-%d").to_string()),
+        "last_verified_at": entry.last_verified_at.map(|d| d.format("%Y-%m-%d").to_string()),
         "metadata_gaps": entry.metadata_gaps(),
         "source_quality": entry.source_quality().to_string(),
         "scopes": entry.scopes,
         "projects": entry.projects,
-        "key_group": entry.key_group,
         "apply_url": entry.apply_url,
         "status": entry.status().to_string(),
         "expires_at": entry.expires_at.map(|d| d.format("%Y-%m-%d").to_string()),
         "last_used_at": entry.last_used_at.map(|d| d.to_rfc3339()),
         "usage_hint": format!("Use via environment variable: {}", entry.env_var),
+        "relevance_score": serde_json::Value::Null,
+        "matched_fields": [],
     })
 }
 
-/// Health report computed from a list of secrets.
-/// Shared by MCP server and Web dashboard.
+#[derive(Debug, Clone, Serialize)]
 pub struct HealthReport {
     pub expired: Vec<serde_json::Value>,
     pub expiring_soon: Vec<serde_json::Value>,
@@ -730,9 +274,19 @@ pub struct HealthReport {
     pub unverified_90: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct HealthSummary {
+    pub total: usize,
+    pub expiry_issues: usize,
+    pub duplicate_count: usize,
+    pub inactive_count: usize,
+    pub unused_count: usize,
+    pub metadata_review_count: usize,
+}
+
 impl HealthReport {
     pub fn from_entries(entries: &[SecretEntry]) -> Self {
-        let now = chrono::Utc::now();
+        let now = Utc::now();
 
         let mut expired = Vec::new();
         let mut expiring_soon = Vec::new();
@@ -745,11 +299,13 @@ impl HealthReport {
                 inactive.push(secret_to_json(entry));
                 continue;
             }
+
             match entry.status() {
                 KeyStatus::Expired => expired.push(secret_to_json(entry)),
                 KeyStatus::ExpiringSoon => expiring_soon.push(secret_to_json(entry)),
                 _ => {}
             }
+
             if entry.is_unused_for_days(now, 30) {
                 unused_30d.push(secret_to_json(entry));
             }
@@ -758,32 +314,30 @@ impl HealthReport {
             }
         }
 
-        let duplicates = find_duplicate_groups(entries);
-        let duplicate_groups: Vec<serde_json::Value> = duplicates
-            .iter()
-            .map(|g| serde_json::json!({"env_var": g.env_var, "names": g.names}))
+        let duplicate_groups = find_duplicate_groups(entries)
+            .into_iter()
+            .map(|group| serde_json::json!({ "env_var": group.env_var, "names": group.names }))
             .collect();
 
-        let active_entries: Vec<_> = entries.iter().filter(|e| e.is_active).collect();
-        let mut source_quality: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
-        for e in &active_entries {
+        let active_entries: Vec<_> = entries.iter().filter(|entry| entry.is_active).collect();
+        let mut source_quality = std::collections::HashMap::new();
+        for entry in &active_entries {
             *source_quality
-                .entry(e.source_quality().to_string())
+                .entry(entry.source_quality().to_string())
                 .or_insert(0) += 1;
         }
 
         let unverified_30 = active_entries
             .iter()
-            .filter(|e| (30..60).contains(&e.unverified_days(now)))
+            .filter(|entry| (30..60).contains(&entry.unverified_days(now)))
             .count();
         let unverified_60 = active_entries
             .iter()
-            .filter(|e| (60..90).contains(&e.unverified_days(now)))
+            .filter(|entry| (60..90).contains(&entry.unverified_days(now)))
             .count();
         let unverified_90 = active_entries
             .iter()
-            .filter(|e| e.unverified_days(now) >= 90)
+            .filter(|entry| entry.unverified_days(now) >= 90)
             .count();
 
         Self {
@@ -801,8 +355,19 @@ impl HealthReport {
     }
 }
 
-/// Infer provider from environment variable name.
-/// Shared by MCP add_key and CLI import.
+impl HealthSummary {
+    pub fn from_report(report: &HealthReport, total: usize) -> Self {
+        Self {
+            total,
+            expiry_issues: report.expired.len() + report.expiring_soon.len(),
+            duplicate_count: report.duplicate_groups.len(),
+            inactive_count: report.inactive.len(),
+            unused_count: report.unused_30d.len(),
+            metadata_review_count: report.metadata_review.len(),
+        }
+    }
+}
+
 pub fn infer_provider(env_var: &str) -> Option<&'static str> {
     let upper = env_var.to_uppercase();
     let patterns: &[(&[&str], &str)] = &[
@@ -828,9 +393,10 @@ pub fn infer_provider(env_var: &str) -> Option<&'static str> {
         (&["NETLIFY"], "netlify"),
         (&["RAILWAY"], "railway"),
     ];
+
     for (keywords, provider) in patterns {
-        for kw in *keywords {
-            if upper.contains(kw) {
+        for keyword in *keywords {
+            if upper.contains(keyword) {
                 return Some(provider);
             }
         }

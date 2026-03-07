@@ -3,21 +3,70 @@ use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Cell, Color
 use console::style;
 use std::fs;
 
-use crate::commands::auth::{get_passphrase, open_db, save_session};
+use crate::commands::auth::{get_data_dir, get_passphrase, load_config, save_keyfile};
+use crate::crypto::Crypto;
+use crate::db::Database;
 
-pub fn cmd_serve() -> Result<()> {
-    match open_db() {
-        Ok(db) => crate::mcp::serve(&db),
+pub fn cmd_serve(transport: String, host: String, port: u16) -> Result<()> {
+    match open_db_noninteractive() {
+        Ok(db) => match transport.as_str() {
+            "stdio" => crate::mcp::serve_stdio(&db),
+            "http" => crate::mcp::serve_http(&db, &host, port),
+            _ => anyhow::bail!("Unsupported MCP transport '{transport}'. Use 'stdio' or 'http'."),
+        },
         Err(e) => {
-            let msg = format!(
-                "KeyFlow vault is locked or not initialized.\n\
-                 Run `kf init` to initialize, or unlock with any kf command first.\n\
-                 Original error: {}",
-                e
-            );
-            anyhow::bail!("{}", msg);
+            // Write a proper MCP JSON-RPC error to stdout so the client
+            // gets a clear message instead of hanging on "connecting..."
+            let err_msg = format_mcp_startup_error(&e);
+            let error_response = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": null,
+                "error": {
+                    "code": -32002,
+                    "message": err_msg
+                }
+            });
+            let body = serde_json::to_string(&error_response).unwrap();
+            print!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+            anyhow::bail!("{}", err_msg);
         }
     }
+}
+
+fn format_mcp_startup_error(err: &anyhow::Error) -> String {
+    let msg = err.to_string();
+    if msg.contains("Vault locked")
+        || msg.contains("Run any `kf` command first to unlock")
+        || msg.contains("KEYFLOW_PASSPHRASE")
+    {
+        return format!(
+            "KeyFlow vault is locked. Run any `kf` command first to unlock, or set KEYFLOW_PASSPHRASE. ({})",
+            err
+        );
+    }
+
+    if msg.contains("unable to open database file")
+        || msg.contains("Unable to open the database file")
+    {
+        let db_path = get_data_dir()
+            .map(|dir| dir.join("keyflow.db").display().to_string())
+            .unwrap_or_else(|_| "<keyflow data dir>/keyflow.db".to_string());
+        return format!(
+            "KeyFlow cannot access its database at {}. If this MCP server is running inside a sandboxed AI tool, grant access to the KeyFlow data directory or disable sandboxing for the MCP process. ({})",
+            db_path, err
+        );
+    }
+
+    format!("KeyFlow MCP failed to start. ({})", err)
+}
+
+/// Open database without any interactive prompts (env + keyfile only).
+fn open_db_noninteractive() -> Result<Database> {
+    let (_data_dir, _config, salt) = load_config()?;
+    let passphrase = crate::commands::auth::get_passphrase_noninteractive()?;
+    let crypto = Crypto::new(&passphrase, &salt)?;
+    let db_path = _data_dir.join("keyflow.db");
+    Database::open(db_path.to_str().unwrap(), crypto)
 }
 
 struct McpTool {
@@ -168,7 +217,7 @@ pub fn cmd_setup(tool: Option<String>, all: bool, list: bool) -> Result<()> {
         .unwrap_or_else(|| "kf".to_string());
 
     let passphrase = get_passphrase()?;
-    let _ = save_session(&passphrase);
+    let _ = save_keyfile(&passphrase);
 
     if all {
         return setup_all(&kf_bin);
@@ -247,11 +296,11 @@ fn print_security_notes() {
         style("•").dim()
     );
     println!(
-        "  {} Session expires after 24 hours. Run any kf command to refresh.",
+        "  {} Your local passphrase file is reused by CLI and MCP until you run kf lock.",
         style("•").dim()
     );
     println!(
-        "  {} Run {} to immediately revoke session.",
+        "  {} Run {} to immediately remove the local passphrase file.",
         style("•").dim(),
         style("kf lock").cyan()
     );
@@ -347,7 +396,8 @@ fn setup_tool(tool: &McpTool, kf_bin: &str) -> Result<()> {
         .context("Cannot resolve home directory")?;
 
     if tool.format == ConfigFormat::Toml {
-        return setup_tool_toml(tool, &path, kf_bin);
+        setup_tool_toml(tool, &path, kf_bin)?;
+        return Ok(());
     }
 
     let mut config: serde_json::Value = if path.exists() {
@@ -373,6 +423,10 @@ fn setup_tool(tool: &McpTool, kf_bin: &str) -> Result<()> {
     let formatted = serde_json::to_string_pretty(&config)?;
     fs::write(&path, formatted)?;
 
+    if tool.name == "claude" {
+        ensure_claude_additional_directory()?;
+    }
+
     if already {
         println!(
             "  {} {} — updated ({})",
@@ -392,16 +446,75 @@ fn setup_tool(tool: &McpTool, kf_bin: &str) -> Result<()> {
     Ok(())
 }
 
+fn ensure_claude_additional_directory() -> Result<()> {
+    let home = dirs::home_dir().context("Cannot resolve home directory")?;
+    let path = home.join(".claude/settings.json");
+    let data_dir = get_data_dir()?;
+    ensure_additional_directory_in_settings(&path, &data_dir)
+}
+
+fn ensure_additional_directory_in_settings(
+    path: &std::path::Path,
+    additional_dir: &std::path::Path,
+) -> Result<()> {
+    let mut config: serde_json::Value = if path.exists() {
+        let content = fs::read_to_string(path)?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    if config
+        .get("permissions")
+        .and_then(|v| v.as_object())
+        .is_none()
+    {
+        config["permissions"] = serde_json::json!({});
+    }
+    if config["permissions"]
+        .get("additionalDirectories")
+        .and_then(|v| v.as_array())
+        .is_none()
+    {
+        config["permissions"]["additionalDirectories"] = serde_json::json!([]);
+    }
+
+    let additional = config["permissions"]["additionalDirectories"]
+        .as_array_mut()
+        .context("Claude settings permissions.additionalDirectories must be an array")?;
+    let data_dir_str = additional_dir.display().to_string();
+    let already = additional.iter().any(|v| v.as_str() == Some(&data_dir_str));
+    if !already {
+        additional.push(serde_json::Value::String(data_dir_str));
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_string_pretty(&config)?)?;
+    Ok(())
+}
+
 fn json_server_entry(tool: &McpTool, kf_bin: &str) -> serde_json::Value {
+    let data_dir = get_data_dir()
+        .map(|dir| dir.display().to_string())
+        .unwrap_or_else(|_| String::new());
     if tool.name == "opencode" {
+        // OpenCode uses "environment" (not "env") for env vars
         serde_json::json!({
             "type": "local",
-            "command": [kf_bin, "serve"]
+            "command": [kf_bin, "serve"],
+            "environment": {
+                "KEYFLOW_DATA_DIR": data_dir
+            }
         })
     } else {
         serde_json::json!({
             "command": kf_bin,
-            "args": ["serve"]
+            "args": ["serve"],
+            "env": {
+                "KEYFLOW_DATA_DIR": data_dir
+            }
         })
     }
 }
@@ -444,7 +557,8 @@ fn setup_tool_toml(tool: &McpTool, path: &std::path::Path, kf_bin: &str) -> Resu
         content.push('\n');
     }
     content.push_str(&format!(
-        "\n[mcp_servers.keyflow]\ncommand = \"{kf_bin}\"\nargs = [\"serve\"]\n"
+        "\n[mcp_servers.keyflow]\ncommand = \"{kf_bin}\"\nargs = [\"serve\"]\n\n[mcp_servers.keyflow.env]\nKEYFLOW_DATA_DIR = \"{}\"\n",
+        get_data_dir()?.display()
     ));
 
     if let Some(parent) = path.parent() {
@@ -485,6 +599,7 @@ mod tests {
 
         assert_eq!(entry["type"], "local");
         assert_eq!(entry["command"], serde_json::json!(["/tmp/kf", "serve"]));
+        assert!(entry["environment"]["KEYFLOW_DATA_DIR"].as_str().is_some());
         assert!(entry.get("args").is_none());
     }
 
@@ -495,6 +610,35 @@ mod tests {
 
         assert_eq!(entry["command"], "/tmp/kf");
         assert_eq!(entry["args"], serde_json::json!(["serve"]));
+        assert!(entry["env"]["KEYFLOW_DATA_DIR"].as_str().is_some());
         assert!(entry.get("type").is_none());
+    }
+
+    #[test]
+    fn format_mcp_error_reports_db_access_issue() {
+        let err = anyhow::anyhow!("unable to open database file");
+        let msg = format_mcp_startup_error(&err);
+        assert!(msg.contains("cannot access its database"));
+        assert!(msg.contains("keyflow.db"));
+    }
+
+    #[test]
+    fn format_mcp_error_reports_locked_vault() {
+        let err = anyhow::anyhow!(
+            "Vault locked. Run any `kf` command first to unlock, or set KEYFLOW_PASSPHRASE."
+        );
+        let msg = format_mcp_startup_error(&err);
+        assert!(msg.contains("vault is locked"));
+        assert!(msg.contains("KEYFLOW_PASSPHRASE"));
+    }
+
+    #[test]
+    fn claude_settings_get_additional_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let settings_path = root.path().join(".claude/settings.json");
+        let data_dir = root.path().join("Library/Application Support/keyflow");
+        ensure_additional_directory_in_settings(&settings_path, &data_dir).unwrap();
+        let content = fs::read_to_string(settings_path).unwrap();
+        assert!(content.contains(&data_dir.display().to_string()));
     }
 }

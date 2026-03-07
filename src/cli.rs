@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "keyflow",
     about = "Developer key vault for storing, finding, and reusing API keys across projects",
+    arg_required_else_help = true,
     version
 )]
 pub struct Cli {
@@ -64,9 +65,6 @@ pub enum Commands {
         /// Project tags (comma-separated)
         #[arg(short = 'P', long)]
         projects: Option<String>,
-        /// Key group name
-        #[arg(short, long)]
-        group: Option<String>,
         /// Description
         #[arg(short, long)]
         desc: Option<String>,
@@ -95,9 +93,6 @@ pub enum Commands {
         /// Filter by project tag
         #[arg(long)]
         project: Option<String>,
-        /// Filter by key group
-        #[arg(long)]
-        group: Option<String>,
         /// Show only expiring/expired keys
         #[arg(long)]
         expiring: bool,
@@ -170,9 +165,6 @@ pub enum Commands {
         /// Toggle active/inactive
         #[arg(long)]
         active: Option<bool>,
-        /// Set key group
-        #[arg(long)]
-        group: Option<String>,
         /// Mark this key as verified now (updates last_verified_at)
         #[arg(long)]
         verify: bool,
@@ -183,9 +175,6 @@ pub enum Commands {
         /// Project filter (auto-detected from package.json/Cargo.toml if omitted)
         #[arg(short, long)]
         project: Option<String>,
-        /// Group filter
-        #[arg(short, long)]
-        group: Option<String>,
         /// Inject all secrets (skip project auto-detection)
         #[arg(short, long)]
         all: bool,
@@ -220,9 +209,6 @@ pub enum Commands {
         /// Filter by project
         #[arg(long)]
         project: Option<String>,
-        /// Filter by group
-        #[arg(long)]
-        group: Option<String>,
         /// Output file (default: stdout)
         #[arg(long, short)]
         output: Option<String>,
@@ -282,23 +268,21 @@ pub enum Commands {
         on_conflict: String,
     },
 
-    /// Manage key groups (bundles of related secrets)
-    Group {
-        #[command(subcommand)]
-        action: GroupAction,
-    },
-
-    /// Use a predefined template to create a bundle of secrets
-    Template {
-        #[command(subcommand)]
-        action: TemplateAction,
-    },
-
-    /// Clear passphrase session (require re-auth on next command)
+    /// Clear cached local passphrase (require re-auth on next command)
     Lock,
 
     /// Start MCP server (for AI coding assistants)
-    Serve,
+    Serve {
+        /// Transport to use: stdio (default) or http
+        #[arg(long, default_value = "stdio")]
+        transport: String,
+        /// Host to bind when using HTTP transport
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Port to bind when using HTTP transport
+        #[arg(long, default_value_t = 8765)]
+        port: u16,
+    },
 
     /// Configure MCP integration for AI coding tools (Claude, Cursor, Windsurf, etc.)
     Setup {
@@ -317,55 +301,5 @@ pub enum Commands {
         /// Shell type
         #[arg(value_enum)]
         shell: clap_complete::Shell,
-    },
-
-    /// Launch experimental TUI (low-maintenance terminal view)
-    Ui,
-
-    /// Open local web dashboard
-    #[command(alias = "dashboard")]
-    Web {
-        /// Port to listen on
-        #[arg(long, default_value = "9876")]
-        port: u16,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum GroupAction {
-    /// List all groups
-    List,
-    /// Show secrets in a group
-    Show {
-        /// Group name
-        name: String,
-    },
-    /// Export a group as .env
-    Export {
-        /// Group name
-        name: String,
-        /// Output file (default: stdout)
-        #[arg(long, short)]
-        output: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum TemplateAction {
-    /// List available templates
-    List,
-    /// Create secrets from a template
-    Use {
-        /// Template name (e.g., google-oauth, stripe, supabase)
-        name: String,
-        /// Comma-separated project tags to assign
-        #[arg(long)]
-        projects: Option<String>,
-        /// Expiry date (YYYY-MM-DD)
-        #[arg(long)]
-        expires: Option<String>,
-        /// Custom prefix for env var names (e.g., MYAPP_)
-        #[arg(long)]
-        prefix: Option<String>,
     },
 }

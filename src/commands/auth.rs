@@ -6,111 +6,30 @@ use std::fs;
 use crate::crypto::Crypto;
 use crate::db::Database;
 use crate::models::{AppConfig, ListFilter};
+use crate::paths;
 
 pub fn get_data_dir() -> Result<std::path::PathBuf> {
-    let dir = dirs::home_dir()
-        .context("Cannot find home directory")?
-        .join(".keyflow");
-    Ok(dir)
+    paths::data_dir()
 }
 
-fn session_path() -> Result<std::path::PathBuf> {
-    Ok(get_data_dir()?.join(".session"))
+fn keyfile_path() -> Result<std::path::PathBuf> {
+    Ok(get_data_dir()?.join(".passphrase"))
 }
 
-const SESSION_MAX_AGE_SECS: u64 = 24 * 60 * 60;
-
-/// Derive a machine-local session encryption key from hostname + uid.
-/// This ensures session files are useless if copied to another machine.
-fn session_key() -> [u8; 32] {
-    use std::hash::{Hash, Hasher};
-    let mut material = String::new();
-    // hostname
-    if let Ok(hostname) = std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("HOST"))
-        .or_else(|_| {
-            std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string())
-        })
-    {
-        material.push_str(&hostname);
-    }
-    material.push(':');
-    // uid (unix)
-    #[cfg(unix)]
-    {
-        // Use std nix-like approach: read /proc/self/status or use id command
-        // Simpler: use a stable machine identifier — the data dir path itself
-        if let Ok(dir) = get_data_dir() {
-            material.push_str(&dir.display().to_string());
-        }
-    }
-    material.push(':');
-    material.push_str("keyflow-session-v1");
-
-    // Hash to a fixed 32-byte key using a simple approach
-    // (not crypto-grade KDF, but sufficient for local session obfuscation)
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    material.hash(&mut hasher);
-    let h1 = hasher.finish();
-    material.push_str(":part2");
-    let mut hasher2 = std::collections::hash_map::DefaultHasher::new();
-    material.hash(&mut hasher2);
-    let h2 = hasher2.finish();
-    material.push_str(":part3");
-    let mut hasher3 = std::collections::hash_map::DefaultHasher::new();
-    material.hash(&mut hasher3);
-    let h3 = hasher3.finish();
-    material.push_str(":part4");
-    let mut hasher4 = std::collections::hash_map::DefaultHasher::new();
-    material.hash(&mut hasher4);
-    let h4 = hasher4.finish();
-
-    let mut key = [0u8; 32];
-    key[..8].copy_from_slice(&h1.to_le_bytes());
-    key[8..16].copy_from_slice(&h2.to_le_bytes());
-    key[16..24].copy_from_slice(&h3.to_le_bytes());
-    key[24..32].copy_from_slice(&h4.to_le_bytes());
-    key
-}
-
-pub(crate) fn read_session() -> Option<String> {
-    let path = session_path().ok()?;
-    if !path.exists() {
-        return None;
-    }
-    let metadata = fs::metadata(&path).ok()?;
-    let modified = metadata.modified().ok()?;
-    let age = std::time::SystemTime::now()
-        .duration_since(modified)
-        .unwrap_or_default();
-    if age.as_secs() > SESSION_MAX_AGE_SECS {
-        let _ = fs::remove_file(&path);
-        return None;
-    }
-    let encrypted_b64 = fs::read_to_string(&path)
+fn read_keyfile() -> Option<String> {
+    let path = keyfile_path().ok()?;
+    fs::read_to_string(&path)
         .ok()
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())?;
-    let encrypted = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        &encrypted_b64,
-    )
-    .ok()?;
-    // Decrypt using machine-local session key
-    let key = session_key();
-    // Use a fixed salt for session crypto (not security-critical, just obfuscation)
-    let session_crypto = Crypto::new_from_raw_key(&key).ok()?;
-    let decrypted = session_crypto.decrypt(&encrypted).ok()?;
-    String::from_utf8(decrypted).ok()
+        .filter(|s| !s.is_empty())
 }
 
-pub(crate) fn save_session(passphrase: &str) -> Result<()> {
-    let path = session_path()?;
-    let key = session_key();
-    let session_crypto = Crypto::new_from_raw_key(&key)?;
-    let encrypted = session_crypto.encrypt(passphrase.as_bytes())?;
-    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &encrypted);
-    fs::write(&path, encoded)?;
+pub fn save_keyfile(passphrase: &str) -> Result<()> {
+    let path = keyfile_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, passphrase)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -120,11 +39,16 @@ pub(crate) fn save_session(passphrase: &str) -> Result<()> {
 }
 
 pub fn cmd_lock() -> Result<()> {
-    let path = session_path()?;
+    let path = keyfile_path()?;
     if path.exists() {
         fs::remove_file(&path)?;
+        println!(
+            "{} Keyfile removed. Passphrase required on next use.",
+            style("✓").green().bold()
+        );
+    } else {
+        println!("{} Already locked.", style("✓").green().bold());
     }
-    println!("{} Session cleared.", style("✓").green().bold());
     Ok(())
 }
 
@@ -173,25 +97,38 @@ fn get_passphrase_gui() -> Result<String> {
 }
 
 pub fn get_passphrase() -> Result<String> {
+    get_passphrase_inner(false)
+}
+
+/// Non-interactive variant: only env var + keyfile, no prompts or GUI dialogs.
+/// Used by MCP serve to avoid blocking stdio.
+pub fn get_passphrase_noninteractive() -> Result<String> {
+    get_passphrase_inner(true)
+}
+
+fn get_passphrase_inner(noninteractive: bool) -> Result<String> {
     // 1. Environment variable (CI/scripting)
     if let Ok(pass) = std::env::var("KEYFLOW_PASSPHRASE") {
         return Ok(pass);
     }
-    // 2. Cached session
-    if let Some(pass) = read_session() {
+    // 2. Saved keyfile (permanent, survives across all contexts including MCP)
+    if let Some(pass) = read_keyfile() {
         return Ok(pass);
+    }
+    if noninteractive {
+        bail!("Vault locked. Run any `kf` command first to unlock, or set KEYFLOW_PASSPHRASE.");
     }
     // 3. Interactive terminal prompt
     if atty::is(atty::Stream::Stdin) {
         let pass = Password::new()
             .with_prompt("KeyFlow passphrase")
             .interact()?;
-        let _ = save_session(&pass);
+        let _ = save_keyfile(&pass);
         return Ok(pass);
     }
     // 4. Native OS dialog (for AI tools, MCP, non-terminal contexts)
     let pass = get_passphrase_gui()?;
-    let _ = save_session(&pass);
+    let _ = save_keyfile(&pass);
     Ok(pass)
 }
 

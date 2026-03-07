@@ -28,7 +28,7 @@
 
 你可以用它：
 - 保存已经申请过的 key
-- 按 `provider / project / group / account / source` 管理
+- 按 `provider / project / account / source` 管理
 - 搜索并复用旧 key，避免重复申请
 - 导出 `.env` 或在运行时注入环境变量
 - 查看哪些 key 快过期、长期未用、信息不完整
@@ -78,13 +78,11 @@ AI 在后台会调用 `add_key`。
 
 你不需要在聊天窗口里手写 `add_key`。
 
-### 3. AI 不是主入口，`CLI + Web` 才是主入口
+### 3. AI 不是主入口，`CLI + MCP` 才是增强层
 
 当前产品主线是：
 - `CLI`：新增、导入、搜索、导出、运行时注入
-- `Web`：可视化浏览、过滤、健康检查
-
-`kf ui` 仍然可用，但现在是实验性 TUI，不是主入口。
+- `MCP`：把 vault 元数据安全提供给 AI 工具
 
 ### 4. 健康提醒不只看过期时间
 
@@ -104,23 +102,6 @@ AI 在后台会调用 `add_key`。
 ---
 
 ## 界面
-
-### Web 控制台：`kf web`
-
-这是当前推荐的可视化入口。
-
-本地启动一个只监听 `127.0.0.1` 的 dashboard。每次启动时会生成一个随机认证 token，浏览器通过带 token 的 URL 打开（如 `http://127.0.0.1:9876?token=xxx`），所有 API 请求需要携带该 token 才能访问。
-
-你可以在这里：
-- 浏览全部密钥
-- 按 provider / project / group 过滤
-- 看 `account` 和 `source`
-- 看过期和健康状态
-- 做日常查找和复用
-
-<p align="center">
-  <img src="docs/web-dashboard.png" alt="Web Dashboard" width="720" />
-</p>
 
 ### CLI
 
@@ -148,24 +129,8 @@ AI 在后台会调用 `add_key`。
 
 <img src="docs/cli-health.png" alt="kf health" width="480" />
 </td>
-<td width="50%">
-
-**`kf template list`** - 服务模板
-
-<img src="docs/cli-templates.png" alt="kf template list" width="480" />
-</td>
 </tr>
 </table>
-
-### TUI：`kf ui`
-
-实验性终端界面，保留给重度终端用户使用。
-
-新功能会优先投入在 `CLI + Web`，不是 TUI。
-
-<p align="center">
-  <img src="docs/tui.png" alt="TUI" width="720" />
-</p>
 
 ---
 
@@ -284,7 +249,6 @@ kf add RESEND_API_KEY re-xxx --provider resend --account acme-mail --source manu
 - `--projects`：项目标签，方便后续 `kf run` / `kf export`
 - `--account`：账号、组织、workspace 名称
 - `--source`：来源，例如 `manual`、`manual:cloudflare-dashboard`、`import:.env`
-- `--group`：把一组相关 key 绑在一起
 
 ### 方式二：导入现有 `.env`
 
@@ -382,7 +346,30 @@ kf setup --list
 }
 ```
 
-推荐方式是先在本机解锁一次 KeyFlow，让 `~/.keyflow/.session` 存在，然后再让 AI 工具通过 MCP 调用 `kf serve`。
+推荐方式是先在本机解锁一次 KeyFlow，让本地数据目录里的 `.passphrase` 存在，然后再让 AI 工具通过 MCP 调用 `kf serve`。
+
+如果你想手动跑本地 HTTP transport：
+
+```bash
+kf serve --transport http --host 127.0.0.1 --port 8765
+```
+
+可用端点：
+- `POST /mcp`
+- `GET /healthz`
+
+这条 HTTP transport 适合本机调试、代理转发或不方便直接接 `stdio` 的 MCP 客户端。
+
+安全边界：
+- HTTP transport 默认只允许绑定环回地址：`127.0.0.1`、`localhost`、`::1`
+- 如果你强行要绑定非本地地址，必须显式设置 `KEYFLOW_ALLOW_REMOTE_HTTP=1`
+- 不建议把 KeyFlow 的 HTTP MCP 直接暴露到局域网或公网
+
+默认数据目录：
+- macOS：`~/Library/Application Support/keyflow/`
+- Linux：`~/.local/share/keyflow/`
+
+运行 `kf setup claude` 时，KeyFlow 还会自动把这个数据目录加入 Claude Code 的 `additionalDirectories`，避免 MCP 因沙箱读不到 vault。
 
 这样做的好处是：
 - 不需要把主密码写进 AI 工具配置文件
@@ -409,7 +396,13 @@ AI 默认只能看到元数据，不会直接拿到密钥值。
 
 ### MCP 工具说明
 
+完整 MCP 契约见：
+- `docs/mcp-contract.md`
+- 发布前检查见：`docs/release-checklist.md`
+- 最近一次发布演练记录见：`docs/release-rehearsal-2026-03-07.md`
+
 只读工具：
+- `discover_project_context`：识别当前仓库或目录的项目上下文，并推断可能需要的 env vars
 - `search_keys`：搜索密钥元数据
 - `get_key_info`：查看单个密钥信息
 - `list_providers`：查看 provider 列表与数量
@@ -421,8 +414,13 @@ AI 默认只能看到元数据，不会直接拿到密钥值。
 - `add_key`：新增密钥到 vault
 - `get_env_snippet`：生成某个项目的 `.env` 片段
 - `check_project_readiness`：检查项目需要的密钥是否齐备
-- `deploy_secret`：把密钥交付到目标环境
-- `deploy_project_secrets`：批量交付项目密钥
+
+推荐 AI 读取顺序：
+- 先读 `vault://current-project`
+- 再读 `vault://project/<name>` 或 `vault://provider/<name>`
+- 再决定要不要调用 `check_project_readiness`、`search_keys`、`add_key`
+
+这样 AI 会先理解当前仓库、推断 required vars、查看当前已经挂载的密钥，再进入具体动作。
 
 ### 重要说明
 
@@ -480,7 +478,7 @@ kf verify --all
 |------|------|
 | `kf init` | 初始化 vault，设置主密码 |
 | `kf add` | 新增密钥 |
-| `kf list` | 列出密钥，可按 provider/project/group 过滤 |
+| `kf list` | 列出密钥，可按 provider/project 过滤 |
 | `kf get <name>` | 读取密钥值 |
 | `kf search <query>` | 按关键词搜索 |
 | `kf scan <path>` | 扫描 `.env` 文件或项目目录中的候选项 |
@@ -491,66 +489,40 @@ kf verify --all
 | `kf import <path>` | 导入 `.env` 文件或项目目录 |
 | `kf export` | 导出为 `.env` |
 | `kf health` | 健康检查 |
-| `kf group list` | 查看分组 |
-| `kf group show <name>` | 查看分组内密钥 |
-| `kf group export <name>` | 导出某个分组 |
-| `kf template list` | 查看模板 |
-| `kf template use <name>` | 按模板创建一组密钥 |
 | `kf passwd` | 修改主密码 |
 | `kf backup` | 备份 vault |
 | `kf restore <file>` | 恢复备份 |
-| `kf serve` | 启动 MCP server |
+| `kf serve` | 启动 MCP server（支持 `stdio` 或 `http` transport） |
 | `kf setup` | 配置 AI 工具集成 |
-| `kf ui` | 启动实验性 TUI |
-| `kf web` | 打开本地 Web 控制台 |
 | `kf completions <shell>` | 生成 shell 补全 |
-
----
-
-## 模板
-
-当前内置 20 个常见服务模板：
-
-```bash
-kf template list
-kf template use google-oauth --projects myapp --expires 2027-01-15
-```
-
-包括：
-`google-oauth`、`github-oauth`、`github-token`、`github-app`、`cloudflare-workers`、`cloudflare-r2`、`cloudflare-pages`、`cloudflare-dns`、`aws-iam`、`stripe`、`stripe-connect`、`supabase`、`openai`、`openai-org`、`anthropic`、`vercel`、`firebase`、`sendgrid`、`docker`、`resend`、`google-cloud-sa`、`google-maps`
-
----
 
 ## 安全
 
 - 所有密钥值使用 **AES-256-GCM** 加密
 - 主密码通过 **Argon2** 派生密钥
-- 本地数据存储在 `~/.keyflow/`，权限为 `0700`
+- 本地数据存储在系统应用数据目录下：
+  macOS 为 `~/Library/Application Support/keyflow/`
+  Linux 为 `~/.local/share/keyflow/`
 - MCP 默认只暴露元数据，不暴露真实密钥值
-- `kf setup` 现在优先依赖本地 session，不再把主密码写进 AI 工具配置文件
+- `kf setup` 现在优先依赖本地 `.passphrase` 文件，不把主密码写进 AI 工具配置文件
 - `kf run` 通过运行时注入环境变量，避免把明文长期落盘
-- `kf web` 只监听 `127.0.0.1`，且带随机 token 认证（未授权请求返回 401）
-- Session 文件使用机器本地密钥加密存储，不再明文保存主密码
+- `.passphrase` 文件权限为 `0600`，仅当前用户可读
 - `kf passwd` 使用数据库事务保护，re-encrypt 中途失败会自动回滚
 - MCP deploy 工具对环境变量名做严格校验（只允许 `[A-Za-z0-9_]`），防止命令注入
 
 ### Session 模型怎么工作
 
-KeyFlow 使用本地 session 文件来避免重复输入主密码：
+KeyFlow 使用本地 passphrase 文件来避免重复输入主密码：
 
-1. 首次运行任何 kf 命令时，输入主密码后会创建 `~/.keyflow/.session`
-2. Session 文件中的密码使用机器本地密钥（基于 hostname + 数据目录路径派生）加密，**不是明文存储**
-3. 后续命令自动解密 session 并读取密码，无需再次输入
-4. Session 文件权限为 `0600`，仅当前用户可读
-5. Session 24 小时后自动过期，过期后需要重新输入密码
-6. Session 文件被复制到其他机器后无法解密（机器本地密钥不同）
-7. 运行 `kf lock` 可以立即清除 session
+1. 首次运行任何 kf 命令时，输入主密码后会创建数据目录中的 `.passphrase`
+2. 后续命令直接读取这个本地文件，无需再次输入密码
+3. `.passphrase` 文件权限为 `0600`，仅当前用户可读
+4. 运行 `kf lock` 可以立即删除这个文件
 
 为什么这样设计：
-- `kf setup` 不再把主密码写进 AI 工具的配置文件
-- 即使 session 文件被读取，也无法直接获得明文密码
-- AI 工具（MCP）和 CLI 共用同一套 session
-- 如果 session 过期或不存在，`kf serve` 会返回明确的错误信息
+- `kf setup` 不把主密码写进 AI 工具的配置文件
+- AI 工具（MCP）和 CLI 共用同一套本地解锁状态
+- 如果本地 passphrase 文件不存在，`kf serve` 会返回明确的错误信息
 
 恢复建议：
 - 定期运行 `kf backup` 创建加密备份

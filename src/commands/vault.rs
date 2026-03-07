@@ -5,8 +5,8 @@ use dialoguer::{Confirm, Password};
 use std::fs;
 use std::path::Path;
 
-use crate::commands::auth::{get_data_dir, get_passphrase, load_config, open_db, save_session};
-use crate::commands::helpers::{decrypt_backup_contents, BackupFile, BACKUP_FORMAT_VERSION};
+use crate::commands::auth::{get_data_dir, get_passphrase, load_config, open_db, save_keyfile};
+use crate::commands::helpers::{BackupFile, BACKUP_FORMAT_VERSION};
 use crate::crypto::Crypto;
 use crate::db::Database;
 use crate::models::{AppConfig, ListFilter, SecretEntry};
@@ -45,7 +45,7 @@ pub fn cmd_init(passphrase_arg: Option<String>) -> Result<()> {
         bail!("Passphrase must be at least 6 characters");
     }
 
-    let _ = save_session(&passphrase);
+    let _ = save_keyfile(&passphrase);
 
     let salt = Crypto::generate_salt();
     let salt_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &salt);
@@ -123,7 +123,7 @@ pub fn cmd_passwd(old_arg: Option<String>, new_arg: Option<String>) -> Result<()
         bail!("Passphrase must be at least 6 characters");
     }
 
-    let _ = save_session(&new_pass);
+    let _ = save_keyfile(&new_pass);
 
     let new_salt = Crypto::generate_salt();
     let new_crypto = Crypto::new(&new_pass, &new_salt)?;
@@ -227,10 +227,22 @@ pub fn cmd_restore(file: &str, passphrase_arg: Option<String>) -> Result<()> {
         }
     };
 
-    let decrypted = decrypt_backup_contents(&backup_file, &pass, || {
-        let (_data_dir, _config, salt) = load_config()?;
-        Ok(salt)
-    })?;
+    let backup_wrapper: BackupFile =
+        serde_json::from_slice(&backup_file).context("Invalid backup file format")?;
+    let salt = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        &backup_wrapper.salt,
+    )
+    .context("Backup salt is invalid")?;
+    let ciphertext = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        &backup_wrapper.ciphertext,
+    )
+    .context("Backup ciphertext is invalid")?;
+    let crypto = Crypto::new(&pass, &salt)?;
+    let decrypted = crypto
+        .decrypt(&ciphertext)
+        .context("Failed to decrypt backup. Wrong passphrase or corrupted file?")?;
 
     let backup_str = String::from_utf8(decrypted)?;
     let backup: serde_json::Value = serde_json::from_str(&backup_str)?;
@@ -279,7 +291,6 @@ pub fn cmd_restore(file: &str, passphrase_arg: Option<String>) -> Result<()> {
                 last_used_at: None,
                 last_verified_at: Some(Utc::now()),
                 is_active: true,
-                key_group: String::new(),
             });
 
         db.add_secret(&entry, value)?;

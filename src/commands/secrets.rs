@@ -4,14 +4,16 @@ use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Cell, Color
 use console::style;
 use dialoguer::{Confirm, Input, Password, Select};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::commands::auth::{open_db, select_secret};
 use crate::commands::helpers::{
-    detect_project_name, detect_project_name_in_dir, get_default_url, infer_provider, parse_csv,
-    parse_date, PROVIDERS,
+    detect_project_name, get_default_url, infer_provider, parse_csv, PROVIDERS,
 };
-use crate::models::{KeyStatus, ListFilter, SecretEntry, TEMPLATES};
+use crate::models::{KeyStatus, ListFilter};
+use crate::services::secrets::{
+    parse_expires, parse_optional_expires, ImportRequest, SecretDraft, SecretService, SecretUpdate,
+};
 
 pub struct AddArgs {
     pub env_var: Option<String>,
@@ -20,7 +22,6 @@ pub struct AddArgs {
     pub account: Option<String>,
     pub org: Option<String>,
     pub projects: Option<String>,
-    pub group: Option<String>,
     pub desc: Option<String>,
     pub source: Option<String>,
     pub expires: Option<String>,
@@ -44,282 +45,7 @@ pub struct UpdateArgs {
     pub url: Option<String>,
     pub expires: Option<String>,
     pub active: Option<bool>,
-    pub group: Option<String>,
     pub verify: bool,
-}
-
-#[derive(Clone)]
-struct ImportSource {
-    path: PathBuf,
-    project_name: Option<String>,
-}
-
-#[derive(Clone)]
-struct ScanCandidate {
-    env_var: String,
-    provider: String,
-    file: PathBuf,
-    project_name: Option<String>,
-}
-
-#[derive(Default)]
-struct ImportStats {
-    imported: usize,
-    overwritten: usize,
-    skipped: usize,
-}
-
-fn collect_import_sources(path: &Path) -> Result<Vec<ImportSource>> {
-    collect_import_sources_inner(path, false)
-}
-
-fn collect_import_sources_recursive(path: &Path) -> Result<Vec<ImportSource>> {
-    collect_import_sources_inner(path, true)
-}
-
-fn collect_import_sources_inner(path: &Path, recursive: bool) -> Result<Vec<ImportSource>> {
-    if path.is_file() {
-        return Ok(vec![ImportSource {
-            path: path.to_path_buf(),
-            project_name: path.parent().and_then(detect_project_name_in_dir),
-        }]);
-    }
-
-    if !path.is_dir() {
-        bail!("Path not found: {}", path.display());
-    }
-
-    let mut files = Vec::new();
-
-    if recursive {
-        for entry in walkdir::WalkDir::new(path)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|e| {
-                let name = e.file_name().to_str().unwrap_or("");
-                !name.starts_with('.') || name.starts_with(".env") || e.depth() == 0
-            })
-        {
-            let entry = entry?;
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let candidate = entry.path();
-            let Some(name) = candidate.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if name == ".env" || name.starts_with(".env.") || name.ends_with(".env") {
-                let project_name = candidate.parent().and_then(detect_project_name_in_dir);
-                files.push(ImportSource {
-                    path: candidate.to_path_buf(),
-                    project_name,
-                });
-            }
-        }
-    } else {
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            let candidate = entry.path();
-            if !candidate.is_file() {
-                continue;
-            }
-            let Some(name) = candidate.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if name == ".env" || name.starts_with(".env.") || name.ends_with(".env") {
-                files.push(ImportSource {
-                    path: candidate,
-                    project_name: detect_project_name_in_dir(path),
-                });
-            }
-        }
-    }
-
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-
-    if files.is_empty() {
-        bail!("No .env files found in '{}'", path.display());
-    }
-
-    Ok(files)
-}
-
-fn import_env_file(
-    db: &crate::db::Database,
-    path: &Path,
-    provider: &str,
-    account_name: &str,
-    projects: &[String],
-    source: Option<&str>,
-    on_conflict: &str,
-) -> Result<ImportStats> {
-    let content = fs::read_to_string(path)?;
-    let mut stats = ImportStats::default();
-    let source_label = source
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("import:{}", path.display()));
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        if let Some((key, val)) = line.split_once('=') {
-            let key = key.trim();
-            let val = val.trim().trim_matches('"').trim_matches('\'');
-
-            if key.is_empty() || val.is_empty() {
-                continue;
-            }
-
-            let mut name = key.to_lowercase().replace('_', "-");
-
-            if db.secret_exists(&name)? {
-                match on_conflict {
-                    "skip" => {
-                        println!(
-                            "{} Skipping '{}' from {} (already exists)",
-                            style("⊘").dim(),
-                            name,
-                            path.display()
-                        );
-                        stats.skipped += 1;
-                        continue;
-                    }
-                    "overwrite" => {
-                        db.update_secret_value(&name, val)?;
-                        db.update_secret_metadata(
-                            &name,
-                            &crate::db::MetadataUpdate {
-                                provider: Some(provider),
-                                account_name: Some(account_name),
-                                description: None,
-                                source: Some(&source_label),
-                                scopes: None,
-                                projects: Some(projects),
-                                apply_url: None,
-                                expires_at: None,
-                                last_verified_at: Some(Some(Utc::now())),
-                                is_active: Some(true),
-                                key_group: None,
-                                org_name: None,
-                                environment: None,
-                                permission_profile: None,
-                            },
-                        )?;
-                        println!(
-                            "{} Overwritten '{}' from {}",
-                            style("↻").yellow(),
-                            style(&name).cyan(),
-                            path.display()
-                        );
-                        stats.overwritten += 1;
-                        continue;
-                    }
-                    "rename" => {
-                        let mut suffix = 2;
-                        loop {
-                            let candidate = format!("{}-{}", name, suffix);
-                            if !db.secret_exists(&candidate)? {
-                                name = candidate;
-                                break;
-                            }
-                            suffix += 1;
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-            }
-
-            let now = Utc::now();
-            let entry = SecretEntry {
-                id: uuid::Uuid::new_v4().to_string(),
-                name: name.clone(),
-                env_var: key.to_string(),
-                provider: provider.to_string(),
-                account_name: account_name.to_string(),
-                org_name: String::new(),
-                description: format!("Imported from {}", path.display()),
-                source: source_label.clone(),
-                environment: String::new(),
-                permission_profile: String::new(),
-                scopes: vec![],
-                projects: projects.to_vec(),
-                apply_url: String::new(),
-                expires_at: None,
-                created_at: now,
-                updated_at: now,
-                last_used_at: None,
-                last_verified_at: Some(now),
-                is_active: true,
-                key_group: String::new(),
-            };
-
-            db.add_secret(&entry, val)?;
-            println!(
-                "{} Imported '{}' ({}) from {}",
-                style("✓").green(),
-                style(&name).cyan(),
-                style(key).yellow(),
-                path.display()
-            );
-            stats.imported += 1;
-        }
-    }
-
-    Ok(stats)
-}
-
-fn collect_scan_candidates(
-    path: &Path,
-    recursive: bool,
-    skip_common: bool,
-    new_only: bool,
-    db: Option<&crate::db::Database>,
-) -> Result<Vec<ScanCandidate>> {
-    use crate::commands::helpers::SKIP_VARS;
-
-    let sources = if recursive {
-        collect_import_sources_recursive(path)?
-    } else {
-        collect_import_sources(path)?
-    };
-
-    let mut candidates = Vec::new();
-    for source in sources {
-        let content = fs::read_to_string(&source.path)?;
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if let Some((key, _)) = line.split_once('=') {
-                let env_var = key.trim();
-                if env_var.is_empty() {
-                    continue;
-                }
-                if skip_common && SKIP_VARS.contains(&env_var.to_uppercase().as_str()) {
-                    continue;
-                }
-                if new_only {
-                    if let Some(db) = db {
-                        let name = env_var.to_lowercase().replace('_', "-");
-                        if db.secret_exists(&name).unwrap_or(false) {
-                            continue;
-                        }
-                    }
-                }
-                candidates.push(ScanCandidate {
-                    env_var: env_var.to_string(),
-                    provider: infer_provider(env_var).unwrap_or("other").to_string(),
-                    file: source.path.clone(),
-                    project_name: source.project_name.clone(),
-                });
-            }
-        }
-    }
-    Ok(candidates)
 }
 
 pub fn cmd_add(args: AddArgs) -> Result<()> {
@@ -330,7 +56,6 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
         account,
         org,
         projects,
-        group,
         desc,
         source,
         expires,
@@ -338,7 +63,7 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
         permission,
         paste,
     } = args;
-    let db = open_db()?;
+    let service = SecretService::new(open_db()?);
     let interactive = atty::is(atty::Stream::Stdin);
 
     let env_var = match env_var {
@@ -348,16 +73,6 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
             .interact_text()?,
         None => bail!("Env var name is required in non-interactive mode"),
     };
-
-    let name = env_var.to_lowercase().replace('_', "-");
-
-    if db.secret_exists(&name)? {
-        bail!(
-            "Secret '{}' already exists. Use 'kf update {}' to modify.",
-            name,
-            name
-        );
-    }
 
     let secret_value = if paste {
         let output = std::process::Command::new("pbpaste")
@@ -395,11 +110,7 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
         None => {
             let inferred = infer_provider(&env_var);
             if let Some(ref p) = inferred {
-                println!(
-                    "  {} provider: {}",
-                    style("▸").dim(),
-                    style(p).cyan()
-                );
+                println!("  {} provider: {}", style("▸").dim(), style(p).cyan());
             }
             if interactive && inferred.is_none() {
                 let idx = Select::new()
@@ -442,19 +153,11 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
     let org_name = org.unwrap_or_default();
     let environment_val = environment.unwrap_or_default();
     let permission_profile = permission.unwrap_or_default();
-    let key_group = group.unwrap_or_default();
     let source = source.unwrap_or_else(|| "manual".to_string());
     let apply_url = get_default_url(&provider);
-    let expires_at = match expires {
-        Some(e) => parse_date(&e)?,
-        None => None,
-    };
-
-    let now = Utc::now();
-    let entry = SecretEntry {
-        id: uuid::Uuid::new_v4().to_string(),
-        name: name.clone(),
+    let entry = service.create_secret(SecretDraft {
         env_var,
+        value: secret_value,
         provider,
         account_name,
         org_name,
@@ -462,19 +165,10 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
         source,
         environment: environment_val,
         permission_profile,
-        scopes: vec![],
         projects: projects_vec,
         apply_url,
-        expires_at,
-        created_at: now,
-        updated_at: now,
-        last_used_at: None,
-        last_verified_at: Some(now),
-        is_active: true,
-        key_group,
-    };
-
-    db.add_secret(&entry, &secret_value)?;
+        expires_at: parse_expires(expires)?,
+    })?;
     println!(
         "\n{} Secret '{}' added (env: {})",
         style("✓").green().bold(),
@@ -488,15 +182,13 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
 pub fn cmd_list(
     provider: Option<String>,
     project: Option<String>,
-    group: Option<String>,
     expiring: bool,
     inactive: bool,
 ) -> Result<()> {
-    let db = open_db()?;
-    let entries = db.list_secrets(&ListFilter {
+    let service = SecretService::new(open_db()?);
+    let entries = service.list_entries(&ListFilter {
         provider,
         project,
-        group,
         expiring,
         inactive,
     })?;
@@ -511,8 +203,7 @@ pub fn cmd_list(
         .load_preset(UTF8_FULL)
         .apply_modifier(UTF8_ROUND_CORNERS)
         .set_header(vec![
-            "Name", "Env Var", "Provider", "Account", "Group", "Projects", "Verified", "Expires",
-            "Status",
+            "Name", "Env Var", "Provider", "Account", "Projects", "Verified", "Expires", "Status",
         ]);
 
     for entry in &entries {
@@ -540,12 +231,6 @@ pub fn cmd_list(
             entry.projects.join(", ")
         };
 
-        let group_str = if entry.key_group.is_empty() {
-            "-"
-        } else {
-            &entry.key_group
-        };
-
         table.add_row(vec![
             Cell::new(&entry.name),
             Cell::new(&entry.env_var).fg(Color::Yellow),
@@ -555,7 +240,6 @@ pub fn cmd_list(
             } else {
                 &entry.account_name
             }),
-            Cell::new(group_str),
             Cell::new(&projects_str),
             Cell::new(&verified_str),
             Cell::new(&expires_str),
@@ -570,12 +254,12 @@ pub fn cmd_list(
 }
 
 pub fn cmd_get(name: Option<String>, raw: bool, copy: bool) -> Result<()> {
-    let db = open_db()?;
+    let service = SecretService::new(open_db()?);
     let name = match name {
         Some(n) => n,
-        None => select_secret(&db)?,
+        None => select_secret(service.db())?,
     };
-    let value = db.get_secret_value(&name)?;
+    let view = service.inspect_secret(&name)?;
 
     if copy {
         let mut child = std::process::Command::new("pbcopy")
@@ -583,26 +267,29 @@ pub fn cmd_get(name: Option<String>, raw: bool, copy: bool) -> Result<()> {
             .spawn()
             .context("Failed to copy (pbcopy). Are you on macOS?")?;
         use std::io::Write;
-        child.stdin.take().unwrap().write_all(value.as_bytes())?;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(view.value.as_bytes())?;
         child.wait()?;
         println!("{} Copied to clipboard.", style("✓").green().bold());
     } else if raw {
-        print!("{}", value);
+        print!("{}", view.value);
     } else {
-        let entry = db.get_secret(&name)?;
         println!(
             "{}: {} = {}",
-            style(&entry.name).cyan(),
-            style(&entry.env_var).yellow(),
-            style(&value).dim()
+            style(&view.entry.name).cyan(),
+            style(&view.entry.env_var).yellow(),
+            style(&view.value).dim()
         );
-        if !entry.account_name.is_empty() {
-            println!("  account: {}", style(&entry.account_name).blue());
+        if !view.entry.account_name.is_empty() {
+            println!("  account: {}", style(&view.entry.account_name).blue());
         }
-        if !entry.source.is_empty() {
-            println!("  source: {}", style(&entry.source).dim());
+        if !view.entry.source.is_empty() {
+            println!("  source: {}", style(&view.entry.source).dim());
         }
-        if let Some(verified) = entry.last_verified_at {
+        if let Some(verified) = view.entry.last_verified_at {
             println!(
                 "  verified: {}",
                 style(verified.format("%Y-%m-%d").to_string()).green()
@@ -614,15 +301,15 @@ pub fn cmd_get(name: Option<String>, raw: bool, copy: bool) -> Result<()> {
 }
 
 pub fn cmd_remove(name: Option<String>, force: bool) -> Result<()> {
-    let db = open_db()?;
+    let service = SecretService::new(open_db()?);
     let name = match name {
         Some(n) => {
-            if !db.secret_exists(&n)? {
+            if !service.secret_exists(&n)? {
                 bail!("Secret '{}' not found", n);
             }
             n
         }
-        None => select_secret(&db)?,
+        None => select_secret(service.db())?,
     };
 
     if !force {
@@ -636,7 +323,7 @@ pub fn cmd_remove(name: Option<String>, force: bool) -> Result<()> {
         }
     }
 
-    db.remove_secret(&name)?;
+    service.remove_secret(&name)?;
     println!("{} Secret '{}' removed", style("✓").green().bold(), name);
 
     Ok(())
@@ -658,62 +345,57 @@ pub fn cmd_update(args: UpdateArgs) -> Result<()> {
         url,
         expires,
         active,
-        group,
         verify,
     } = args;
-    let db = open_db()?;
+    let service = SecretService::new(open_db()?);
     let name = match name {
         Some(n) => {
-            if !db.secret_exists(&n)? {
+            if !service.db().secret_exists(&n)? {
                 bail!("Secret '{}' not found", n);
             }
             n
         }
-        None => select_secret(&db)?,
+        None => select_secret(service.db())?,
     };
-
-    if let Some(v) = value {
-        db.update_secret_value(&name, &v)?;
-        println!(
-            "{} Secret value updated for '{}'",
-            style("✓").green().bold(),
-            name
-        );
-    }
 
     let scopes_vec = scopes.map(|s| parse_csv(&s));
     let projects_vec = projects.map(|p| parse_csv(&p));
-    let expires_at = match expires {
-        Some(ref e) if e.is_empty() => Some(None),
-        Some(ref e) => Some(parse_date(e)?),
-        None => None,
-    };
-
-    let last_verified_at = if verify { Some(Some(Utc::now())) } else { None };
-
-    db.update_secret_metadata(
+    let had_value_update = value.is_some();
+    service.update_secret(
         &name,
-        &crate::db::MetadataUpdate {
-            provider: provider.as_deref(),
-            account_name: account.as_deref(),
-            org_name: org.as_deref(),
-            description: desc.as_deref(),
-            source: source.as_deref(),
-            environment: environment.as_deref(),
-            permission_profile: permission.as_deref(),
-            scopes: scopes_vec.as_deref(),
-            projects: projects_vec.as_deref(),
-            apply_url: url.as_deref(),
-            expires_at,
-            last_verified_at,
-            is_active: active,
-            key_group: group.as_deref(),
+        SecretUpdate {
+            value,
+            provider,
+            account_name: account,
+            org_name: org,
+            description: desc,
+            source,
+            environment,
+            permission_profile: permission,
+            scopes: scopes_vec,
+            projects: projects_vec,
+            apply_url: url,
+            expires_at: parse_optional_expires(expires)?,
+            active,
+            verify,
         },
     )?;
 
-    if verify {
+    if verify && had_value_update {
+        println!(
+            "{} Secret value verified and metadata updated for '{}'",
+            style("✓").green().bold(),
+            name
+        );
+    } else if verify {
         println!(
             "{} Verified and metadata updated for '{}'",
+            style("✓").green().bold(),
+            name
+        );
+    } else if had_value_update {
+        println!(
+            "{} Secret value and metadata updated for '{}'",
             style("✓").green().bold(),
             name
         );
@@ -727,35 +409,24 @@ pub fn cmd_update(args: UpdateArgs) -> Result<()> {
     Ok(())
 }
 
-pub fn cmd_run(
-    project: Option<String>,
-    group: Option<String>,
-    all: bool,
-    command: Vec<String>,
-) -> Result<()> {
+pub fn cmd_run(project: Option<String>, all: bool, command: Vec<String>) -> Result<()> {
     if command.is_empty() {
         bail!("No command specified");
     }
 
-    let db = open_db()?;
-    let project = if all {
-        None
-    } else {
-        project.or_else(|| {
-            let detected = detect_project_name();
-            if let Some(ref name) = detected {
-                eprintln!(
-                    "  {} injecting secrets for project: {} (auto-detected)",
-                    style("▸").dim(),
-                    style(name).cyan()
-                );
-                eprintln!("  {} use --all to inject all secrets", style("ℹ").blue());
-            }
-            detected
-        })
-    };
-
-    let env_pairs = db.get_all_for_env(project.as_deref(), group.as_deref())?;
+    let service = SecretService::new(open_db()?);
+    let detected = detect_project_name();
+    let resolution = service.resolve_run_env_pairs(project, all, detected.clone())?;
+    let project = resolution.project;
+    let env_pairs = resolution.env_pairs;
+    if let Some(name) = project.as_ref().filter(|_| !all).or(detected.as_ref()) {
+        eprintln!(
+            "  {} injecting secrets for project: {} (auto-detected)",
+            style("▸").dim(),
+            style(name).cyan()
+        );
+        eprintln!("  {} use --all to inject all secrets", style("ℹ").blue());
+    }
 
     let mut cmd = std::process::Command::new(&command[0]);
     cmd.args(&command[1..]);
@@ -785,84 +456,32 @@ pub fn cmd_import(
         bail!("Invalid --on-conflict value. Use: skip, overwrite, rename");
     }
 
-    let db = open_db()?;
+    let service = SecretService::new(open_db()?);
     let provider = provider.unwrap_or_else(|| "imported".to_string());
     let account_name = account.unwrap_or_default();
-    let import_sources = collect_import_sources(path)?;
-    let mut imported = 0;
-    let mut overwritten = 0;
-    let mut skipped = 0;
-
-    for import_source in import_sources {
-        let projects = match &project {
-            Some(project) => vec![project.clone()],
-            None => import_source
-                .project_name
-                .clone()
-                .map(|name| vec![name])
-                .unwrap_or_default(),
-        };
-
-        let stats = import_env_file(
-            &db,
-            &import_source.path,
-            &provider,
-            &account_name,
-            &projects,
-            source.as_deref(),
-            on_conflict,
-        )?;
-
-        imported += stats.imported;
-        overwritten += stats.overwritten;
-        skipped += stats.skipped;
-    }
+    let stats = service.import_path(ImportRequest {
+        path,
+        provider: &provider,
+        account_name: &account_name,
+        project_override: project.as_deref(),
+        source: source.as_deref(),
+        on_conflict,
+        recursive: false,
+    })?;
 
     println!(
         "\n{} Imported: {}, Overwritten: {}, Skipped: {}",
         style("✓").green().bold(),
-        imported,
-        overwritten,
-        skipped
+        stats.imported,
+        stats.overwritten,
+        stats.skipped
     );
     Ok(())
 }
 
-pub fn cmd_export(
-    project: Option<String>,
-    group: Option<String>,
-    output: Option<String>,
-) -> Result<()> {
-    let db = open_db()?;
-    let entries = db.list_secrets(&ListFilter {
-        project,
-        group,
-        ..Default::default()
-    })?;
-
-    let mut lines = Vec::new();
-    lines.push("# Generated by KeyFlow".to_string());
-    lines.push(format!(
-        "# Date: {}",
-        Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
-    ));
-    lines.push(String::new());
-
-    let mut current_provider = String::new();
-    for entry in &entries {
-        if entry.provider != current_provider {
-            if !current_provider.is_empty() {
-                lines.push(String::new());
-            }
-            lines.push(format!("# === {} ===", entry.provider.to_uppercase()));
-            current_provider = entry.provider.clone();
-        }
-
-        let value = db.get_secret_value(&entry.name)?;
-        lines.push(format!("{}={}", entry.env_var, value));
-    }
-
-    let content = lines.join("\n") + "\n";
+pub fn cmd_export(project: Option<String>, output: Option<String>) -> Result<()> {
+    let service = SecretService::new(open_db()?);
+    let (entries, content) = service.export_project_env(project)?;
 
     match output {
         Some(path) => {
@@ -883,32 +502,19 @@ pub fn cmd_export(
 }
 
 pub fn cmd_health() -> Result<()> {
-    use crate::models::find_duplicate_groups;
-
-    let db = open_db()?;
-    let entries = db.list_secrets(&ListFilter {
-        inactive: true,
-        ..Default::default()
-    })?;
-
-    let now = Utc::now();
-    let mut issues = 0;
+    let service = SecretService::new(open_db()?);
+    let health = service.health_view()?;
 
     println!("{}", style("KeyFlow Health Report").bold().cyan());
     println!("{}", style("═".repeat(50)).dim());
 
-    let expired: Vec<_> = entries
-        .iter()
-        .filter(|e| matches!(e.status(), KeyStatus::Expired))
-        .collect();
-    if !expired.is_empty() {
-        issues += expired.len();
+    if !health.expired.is_empty() {
         println!(
             "\n{} {} Expired Keys:",
             style("✗").red().bold(),
-            expired.len()
+            health.expired.len()
         );
-        for e in &expired {
+        for e in &health.expired {
             println!(
                 "  {} {} (expired {})",
                 style("•").red(),
@@ -923,19 +529,17 @@ pub fn cmd_health() -> Result<()> {
         }
     }
 
-    let expiring: Vec<_> = entries
-        .iter()
-        .filter(|e| matches!(e.status(), KeyStatus::ExpiringSoon))
-        .collect();
-    if !expiring.is_empty() {
-        issues += expiring.len();
+    if !health.expiring.is_empty() {
         println!(
             "\n{} {} Keys Expiring Within 7 Days:",
             style("⚠").yellow().bold(),
-            expiring.len()
+            health.expiring.len()
         );
-        for e in &expiring {
-            let days_left = e.expires_at.map(|d| (d - now).num_days()).unwrap_or(0);
+        for e in &health.expiring {
+            let days_left = e
+                .expires_at
+                .map(|d| (d - Utc::now()).num_days())
+                .unwrap_or(0);
             println!(
                 "  {} {} ({} days left)",
                 style("•").yellow(),
@@ -948,15 +552,13 @@ pub fn cmd_health() -> Result<()> {
         }
     }
 
-    let duplicates = find_duplicate_groups(&entries);
-    if !duplicates.is_empty() {
-        issues += duplicates.len();
+    if !health.duplicates.is_empty() {
         println!(
             "\n{} {} Duplicate / Overlapping Key Groups:",
             style("⚠").yellow().bold(),
-            duplicates.len()
+            health.duplicates.len()
         );
-        for group in &duplicates {
+        for group in &health.duplicates {
             println!(
                 "  {} {} → {}",
                 style("•").yellow(),
@@ -971,175 +573,127 @@ pub fn cmd_health() -> Result<()> {
         }
     }
 
-    let mut provider_old_keys: std::collections::HashMap<&str, Vec<&SecretEntry>> =
-        std::collections::HashMap::new();
-    for e in &entries {
-        if e.is_active && !e.provider.is_empty() && e.is_unused_for_days(now, 60) {
-            provider_old_keys.entry(&e.provider).or_default().push(e);
-        }
-    }
-    let multi_old: Vec<_> = provider_old_keys
-        .iter()
-        .filter(|(_, keys)| keys.len() > 1)
-        .collect();
-    if !multi_old.is_empty() {
+    if !health.provider_old_keys.is_empty() {
         println!(
             "\n{} Same Provider, Multiple Old Keys:",
             style("⚠").yellow().bold()
         );
-        for (provider, keys) in &multi_old {
+        for (provider, keys) in &health.provider_old_keys {
             println!(
                 "  {} {} ({} keys unused 60+ days): {}",
                 style("•").yellow(),
                 style(provider).cyan(),
                 keys.len(),
-                keys.iter()
-                    .map(|k| k.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                keys.join(", ")
             );
         }
     }
 
-    let active_entries: Vec<_> = entries.iter().filter(|e| e.is_active).collect();
-    let mut quality_counts: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
-    for e in &active_entries {
-        *quality_counts
-            .entry(e.source_quality().to_string())
-            .or_insert(0) += 1;
-    }
-    if !quality_counts.is_empty() {
+    if !health.report.source_quality.is_empty() {
         println!("\n{} Source Quality Breakdown:", style("ℹ").blue().bold());
-        let order = ["template", "import", "manual", "mcp", "other", "unknown"];
+        let order = ["import", "manual", "mcp", "other", "unknown"];
         for tier in &order {
-            if let Some(count) = quality_counts.get(*tier) {
+            if let Some(count) = health.report.source_quality.get(*tier) {
                 println!("  {} {}: {}", style("•").dim(), tier, count);
             }
         }
     }
 
-    let unverified_30: Vec<_> = active_entries
-        .iter()
-        .filter(|e| {
-            let days = e.unverified_days(now);
-            (30..60).contains(&days)
-        })
-        .collect();
-    let unverified_60: Vec<_> = active_entries
-        .iter()
-        .filter(|e| {
-            let days = e.unverified_days(now);
-            (60..90).contains(&days)
-        })
-        .collect();
-    let unverified_90: Vec<_> = active_entries
-        .iter()
-        .filter(|e| e.unverified_days(now) >= 90)
-        .collect();
-    if !unverified_30.is_empty() || !unverified_60.is_empty() || !unverified_90.is_empty() {
+    if !health.unverified_30.is_empty()
+        || !health.unverified_60.is_empty()
+        || !health.unverified_90.is_empty()
+    {
         println!("\n{} Unverified Keys:", style("!").yellow().bold());
-        if !unverified_90.is_empty() {
+        if !health.unverified_90.is_empty() {
             println!(
                 "  {} 90+ days ({}): {}",
                 style("•").red(),
-                unverified_90.len(),
-                unverified_90
-                    .iter()
-                    .map(|e| e.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                health.unverified_90.len(),
+                health.unverified_90.join(", ")
             );
         }
-        if !unverified_60.is_empty() {
+        if !health.unverified_60.is_empty() {
             println!(
                 "  {} 60-89 days ({}): {}",
                 style("•").yellow(),
-                unverified_60.len(),
-                unverified_60
-                    .iter()
-                    .map(|e| e.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                health.unverified_60.len(),
+                health.unverified_60.join(", ")
             );
         }
-        if !unverified_30.is_empty() {
+        if !health.unverified_30.is_empty() {
             println!(
                 "  {} 30-59 days ({}): {}",
                 style("•").dim(),
-                unverified_30.len(),
-                unverified_30
-                    .iter()
-                    .map(|e| e.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                health.unverified_30.len(),
+                health.unverified_30.join(", ")
             );
         }
     }
 
-    let unused: Vec<_> = entries
-        .iter()
-        .filter(|e| e.is_unused_for_days(now, 30))
-        .collect();
-    if !unused.is_empty() {
+    if !health.unused.is_empty() {
         println!(
             "\n{} {} Keys Unused for 30+ Days:",
             style("ℹ").blue().bold(),
-            unused.len()
+            health.unused.len()
         );
-        for e in &unused {
-            let days = e.days_since_last_seen(now);
+        for (name, days) in &health.unused {
             println!(
                 "  {} {} ({} days since last use)",
                 style("•").dim(),
-                style(&e.name).cyan(),
+                style(name).cyan(),
                 days
             );
         }
     }
 
-    let metadata_gaps: Vec<_> = entries
-        .iter()
-        .filter(|e| e.is_active && e.has_metadata_gaps())
-        .collect();
-    if !metadata_gaps.is_empty() {
+    if !health.metadata_gaps.is_empty() {
         println!(
             "\n{} {} Keys Need Metadata Review:",
             style("!").yellow().bold(),
-            metadata_gaps.len()
+            health.metadata_gaps.len()
         );
-        for e in &metadata_gaps {
+        for (name, gaps) in &health.metadata_gaps {
             println!(
                 "  {} {} ({})",
                 style("•").yellow(),
-                style(&e.name).cyan(),
-                e.metadata_gaps().join(", ")
+                style(name).cyan(),
+                gaps.join(", ")
             );
         }
     }
 
-    let inactive: Vec<_> = entries.iter().filter(|e| !e.is_active).collect();
-    if !inactive.is_empty() {
-        println!("\n{} {} Inactive Keys:", style("⊘").dim(), inactive.len());
-        for e in &inactive {
-            println!("  {} {}", style("•").dim(), style(&e.name).dim());
+    if !health.inactive.is_empty() {
+        println!(
+            "\n{} {} Inactive Keys:",
+            style("⊘").dim(),
+            health.inactive.len()
+        );
+        for name in &health.inactive {
+            println!("  {} {}", style("•").dim(), style(name).dim());
         }
     }
 
     println!("{}", style("═".repeat(50)).dim());
-    if issues == 0 && inactive.is_empty() && unused.is_empty() && metadata_gaps.is_empty() {
+    if health.summary.expiry_issues == 0
+        && health.summary.inactive_count == 0
+        && health.summary.unused_count == 0
+        && health.summary.metadata_review_count == 0
+        && health.summary.duplicate_count == 0
+    {
         println!(
             "\n{} All {} secrets are healthy!",
             style("✓").green().bold(),
-            entries.len()
+            health.summary.total
         );
     } else {
         println!(
             "\nTotal: {} secrets, {} expiry issues, {} duplicates, {} review items",
-            entries.len(),
-            issues - duplicates.len(),
-            duplicates.len(),
-            inactive.len() + unused.len() + metadata_gaps.len()
+            health.summary.total,
+            health.summary.expiry_issues,
+            health.summary.duplicate_count,
+            health.summary.inactive_count
+                + health.summary.unused_count
+                + health.summary.metadata_review_count
         );
     }
 
@@ -1147,31 +701,18 @@ pub fn cmd_health() -> Result<()> {
 }
 
 pub fn cmd_verify(name: Option<String>, all: bool) -> Result<()> {
-    let db = open_db()?;
+    let service = SecretService::new(open_db()?);
     let names = if all {
-        db.list_secrets(&ListFilter {
-            inactive: true,
-            ..Default::default()
-        })?
-        .into_iter()
-        .map(|entry| entry.name)
-        .collect::<Vec<_>>()
+        service.all_secret_names(true)?
     } else {
         vec![match name {
             Some(name) => name,
-            None => select_secret(&db)?,
+            None => select_secret(service.db())?,
         }]
     };
 
-    let now = Utc::now();
+    let now = service.verify_names(&names)?;
     for name in &names {
-        db.update_secret_metadata(
-            name,
-            &crate::db::MetadataUpdate {
-                last_verified_at: Some(Some(now)),
-                ..Default::default()
-            },
-        )?;
         println!(
             "{} Verified '{}' at {}",
             style("✓").green().bold(),
@@ -1188,8 +729,8 @@ pub fn cmd_search(query: Option<String>) -> Result<()> {
         Some(q) => q,
         None => Input::new().with_prompt("Search").interact_text()?,
     };
-    let db = open_db()?;
-    let entries = db.search_secrets(&query)?;
+    let service = SecretService::new(open_db()?);
+    let entries = service.search_entries(&query)?;
 
     if entries.is_empty() {
         println!("No secrets matching '{}' found.", style(&query).yellow());
@@ -1237,9 +778,6 @@ pub fn cmd_search(query: Option<String>) -> Result<()> {
                 style(verified.format("%Y-%m-%d").to_string()).green()
             );
         }
-        if !entry.key_group.is_empty() {
-            println!("    group: {}", style(&entry.key_group).magenta());
-        }
         if !entry.projects.is_empty() {
             println!("    projects: {}", entry.projects.join(", "));
         }
@@ -1268,9 +806,8 @@ pub fn cmd_scan(
         bail!("Path not found: {}", path);
     }
 
-    let db = if new_only { Some(open_db()?) } else { None };
-    let candidates =
-        collect_scan_candidates(scan_path, recursive, skip_common, new_only, db.as_ref())?;
+    let service = SecretService::new(open_db()?);
+    let candidates = service.scan_path(scan_path, recursive, skip_common, new_only)?;
     if candidates.is_empty() {
         println!("{}", style("No candidate keys found.").dim());
         return Ok(());
@@ -1355,184 +892,4 @@ pub fn cmd_scan(
     }
 
     cmd_import(path, provider, account, project, source, on_conflict)
-}
-
-pub fn cmd_group_list() -> Result<()> {
-    let db = open_db()?;
-    let groups = db.list_groups()?;
-
-    if groups.is_empty() {
-        println!("{}", style("No groups found. Use --group flag when adding secrets, or use 'keyflow template use'.").dim());
-        return Ok(());
-    }
-
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec!["Group", "Keys"]);
-
-    for (name, count) in &groups {
-        table.add_row(vec![Cell::new(name).fg(Color::Magenta), Cell::new(count)]);
-    }
-
-    println!("{table}");
-    Ok(())
-}
-
-pub fn cmd_group_show(name: &str) -> Result<()> {
-    let db = open_db()?;
-    let entries = db.list_secrets(&ListFilter {
-        group: Some(name.to_string()),
-        ..Default::default()
-    })?;
-
-    if entries.is_empty() {
-        println!("No secrets in group '{}'.", style(name).magenta());
-        return Ok(());
-    }
-
-    println!("Group: {}\n", style(name).magenta().bold());
-    for entry in &entries {
-        println!(
-            "  {} {} = {}",
-            style("•").green(),
-            style(&entry.env_var).yellow(),
-            style(&entry.description).dim()
-        );
-    }
-    println!(
-        "\nUse {} to get values.",
-        style(format!("keyflow export --group {}", name)).cyan()
-    );
-    Ok(())
-}
-
-pub fn cmd_group_export(name: &str, output: Option<String>) -> Result<()> {
-    cmd_export(None, Some(name.to_string()), output)
-}
-
-pub fn cmd_template_list() -> Result<()> {
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec!["Template", "Provider", "Keys", "Description"]);
-
-    for t in TEMPLATES {
-        let keys_str: Vec<&str> = t.keys.iter().map(|k| k.env_var).collect();
-        table.add_row(vec![
-            Cell::new(t.name).fg(Color::Cyan),
-            Cell::new(t.provider),
-            Cell::new(keys_str.join(", ")).fg(Color::Yellow),
-            Cell::new(t.description),
-        ]);
-    }
-
-    println!("{table}");
-    println!(
-        "\nUsage: {} <template-name> [--projects myapp] [--prefix MYAPP_]",
-        style("keyflow template use").cyan()
-    );
-    Ok(())
-}
-
-pub fn cmd_template_use(
-    template_name: &str,
-    projects: Option<String>,
-    expires: Option<String>,
-    prefix: Option<String>,
-) -> Result<()> {
-    let template = TEMPLATES
-        .iter()
-        .find(|t| t.name == template_name)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Template '{}' not found. Run {} to see available templates.",
-                template_name,
-                style("keyflow template list").cyan()
-            )
-        })?;
-
-    println!(
-        "{} Using template: {} ({})",
-        style("▸").bold(),
-        style(template.name).cyan().bold(),
-        template.description
-    );
-    println!(
-        "  Provider: {}  URL: {}\n",
-        template.provider,
-        style(template.apply_url).underlined()
-    );
-
-    let db = open_db()?;
-    let projects_vec: Vec<String> = projects.map(|p| parse_csv(&p)).unwrap_or_default();
-    let expires_at = expires.as_deref().map(parse_date).transpose()?.flatten();
-    let prefix = prefix.unwrap_or_default();
-    let group_name = template.name.to_string();
-    let now = Utc::now();
-
-    let mut created = 0;
-    for tkey in template.keys {
-        let env_var = format!("{}{}", prefix, tkey.env_var);
-        let secret_name = env_var.to_lowercase().replace('_', "-");
-
-        if db.secret_exists(&secret_name)? {
-            println!(
-                "{} Skipping '{}' (already exists)",
-                style("⊘").dim(),
-                secret_name
-            );
-            continue;
-        }
-
-        println!("  {} {}", style("→").cyan(), style(&env_var).yellow());
-        println!("    {}", style(tkey.description).dim());
-
-        let value = if tkey.is_secret {
-            Password::new()
-                .with_prompt(format!("  Enter {}", tkey.env_var))
-                .interact()?
-        } else {
-            Input::new()
-                .with_prompt(format!("  Enter {}", tkey.env_var))
-                .interact_text()?
-        };
-
-        let entry = SecretEntry {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: secret_name.clone(),
-            env_var,
-            provider: template.provider.to_string(),
-            account_name: String::new(),
-            org_name: String::new(),
-            description: tkey.description.to_string(),
-            source: format!("template:{}", template.name),
-            environment: String::new(),
-            permission_profile: String::new(),
-            scopes: vec![],
-            projects: projects_vec.clone(),
-            apply_url: template.apply_url.to_string(),
-            expires_at,
-            created_at: now,
-            updated_at: now,
-            last_used_at: None,
-            last_verified_at: Some(now),
-            is_active: true,
-            key_group: group_name.clone(),
-        };
-
-        db.add_secret(&entry, &value)?;
-        println!("  {}\n", style("✓ Saved").green());
-        created += 1;
-    }
-
-    println!(
-        "\n{} Created {} secrets in group '{}'",
-        style("✓").green().bold(),
-        created,
-        style(&group_name).magenta()
-    );
-    Ok(())
 }

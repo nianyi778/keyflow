@@ -3,8 +3,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use keyflow::crypto::Crypto;
-
 fn temp_root(test_name: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -40,6 +38,21 @@ fn count_occurrences(haystack: &str, needle: &str) -> usize {
     haystack.match_indices(needle).count()
 }
 
+fn data_dir_for_home(home: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        home.join("Library/Application Support/keyflow")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        home.join(".local/share/keyflow")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        home.join(".keyflow")
+    }
+}
+
 #[test]
 fn cli_main_flow_init_add_get_export_import_backup_restore() {
     let root = temp_root("main-flow");
@@ -65,8 +78,6 @@ fn cli_main_flow_init_add_get_export_import_backup_restore() {
             "openai",
             "--projects",
             "demo",
-            "--group",
-            "llm",
         ],
     );
     assert!(
@@ -305,8 +316,41 @@ fn setup_codex_writes_mcp_config() {
     let config = fs::read_to_string(&config_path).unwrap();
     assert!(config.contains("[mcp_servers.keyflow]"));
     assert!(config.contains("args = [\"serve\"]"));
+    assert!(config.contains("[mcp_servers.keyflow.env]"));
+    assert!(config.contains("KEYFLOW_DATA_DIR"));
     assert!(!config.contains("KEYFLOW_PASSPHRASE"));
-    assert!(home.join(".keyflow/.session").exists());
+    assert!(data_dir_for_home(&home).join(".passphrase").exists());
+}
+
+#[test]
+fn setup_claude_writes_mcp_config_and_directory_access() {
+    let root = temp_root("setup-claude");
+    let home = root.join("home");
+    fs::create_dir_all(home.join(".claude")).unwrap();
+
+    let init = run_kf(&home, &["init", "--passphrase", "pass123"]);
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let setup = run_kf(&home, &["setup", "claude"]);
+    assert!(
+        setup.status.success(),
+        "setup failed: {}",
+        String::from_utf8_lossy(&setup.stderr)
+    );
+
+    let config = fs::read_to_string(home.join(".claude.json")).unwrap();
+    assert!(config.contains("\"mcpServers\""));
+    assert!(config.contains("\"keyflow\""));
+    assert!(config.contains("\"serve\""));
+    assert!(config.contains("KEYFLOW_DATA_DIR"));
+
+    let settings = fs::read_to_string(home.join(".claude/settings.json")).unwrap();
+    assert!(settings.contains("additionalDirectories"));
+    assert!(settings.contains(&data_dir_for_home(&home).display().to_string()));
 }
 
 #[test]
@@ -338,7 +382,7 @@ fn setup_codex_is_idempotent() {
 
     let config = fs::read_to_string(home.join(".codex/config.toml")).unwrap();
     assert_eq!(count_occurrences(&config, "[mcp_servers.keyflow]"), 1);
-    assert_eq!(count_occurrences(&config, "[mcp_servers.keyflow.env]"), 0);
+    assert_eq!(count_occurrences(&config, "[mcp_servers.keyflow.env]"), 1);
 }
 
 #[test]
@@ -633,77 +677,4 @@ fn health_reports_metadata_review_items_for_incomplete_assets() {
     assert!(stdout.contains("account"));
     assert!(stdout.contains("project"));
     assert!(stdout.contains("expiry"));
-}
-
-#[test]
-fn restore_supports_legacy_raw_encrypted_backup() {
-    let root = temp_root("legacy-backup");
-    let home = root.join("home");
-    fs::create_dir_all(&home).unwrap();
-
-    let init = run_kf(&home, &["init", "--passphrase", "pass123"]);
-    assert!(
-        init.status.success(),
-        "init failed: {}",
-        String::from_utf8_lossy(&init.stderr)
-    );
-
-    let config_path = home.join(".keyflow/config.json");
-    let config: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
-    let salt = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        config.get("salt").unwrap().as_str().unwrap(),
-    )
-    .unwrap();
-
-    let payload = serde_json::json!({
-        "version": "0.2.0",
-        "created_at": "2026-03-06T00:00:00Z",
-        "secrets": [{
-            "name": "legacy-openai-key",
-            "env_var": "OPENAI_API_KEY",
-            "provider": "openai",
-            "description": "legacy backup",
-            "scopes": [],
-            "projects": ["legacy-demo"],
-            "apply_url": "",
-            "expires_at": null,
-            "created_at": "2026-03-06T00:00:00Z",
-            "updated_at": "2026-03-06T00:00:00Z",
-            "last_used_at": null,
-            "is_active": true,
-            "key_group": "",
-            "_value": "sk-legacy-value"
-        }]
-    });
-    let crypto = Crypto::new("pass123", &salt).unwrap();
-    let encrypted = crypto
-        .encrypt(serde_json::to_string_pretty(&payload).unwrap().as_bytes())
-        .unwrap();
-    let legacy_backup_path = root.join("legacy-backup.enc");
-    fs::write(&legacy_backup_path, encrypted).unwrap();
-
-    let restore = run_kf(
-        &home,
-        &[
-            "restore",
-            legacy_backup_path.to_str().unwrap(),
-            "--passphrase",
-            "pass123",
-        ],
-    );
-    assert!(
-        restore.status.success(),
-        "legacy restore failed: {}",
-        String::from_utf8_lossy(&restore.stderr)
-    );
-
-    let get = run_kf(&home, &["get", "legacy-openai-key", "--raw"]);
-    assert!(
-        get.status.success(),
-        "legacy get failed: {}",
-        String::from_utf8_lossy(&get.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&get.stdout), "sk-legacy-value");
 }

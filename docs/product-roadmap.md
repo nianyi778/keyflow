@@ -50,7 +50,7 @@
 
 ### Local Edition
 
-- CLI、本地 Web 控制台、可选实验性 TUI
+- CLI + MCP
 - 本地加密 vault
 - import、search、export、run、backup、restore
 - 可选 AI 集成

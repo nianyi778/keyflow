@@ -1,23 +1,20 @@
 pub mod cli;
 pub mod commands;
 pub mod crypto;
-pub mod dashboard;
 pub mod db;
 pub mod mcp;
 pub mod models;
-pub mod tui;
+pub mod paths;
+pub mod services;
 
 use anyhow::Result;
 use clap::{CommandFactory, Parser};
 
-use crate::cli::{Cli, Commands, GroupAction, TemplateAction};
+use crate::cli::{Cli, Commands};
 
 pub fn run() -> Result<()> {
     let cli = match Cli::try_parse() {
         Ok(c) => c,
-        Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
-            return tui::cmd_tui();
-        }
         Err(e) => e.exit(),
     };
 
@@ -37,7 +34,6 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             account,
             org,
             projects,
-            group,
             desc,
             source,
             expires,
@@ -51,7 +47,6 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             account,
             org,
             projects,
-            group,
             desc,
             source,
             expires,
@@ -62,10 +57,9 @@ fn dispatch_command(cli: Cli) -> Result<()> {
         Commands::List {
             provider,
             project,
-            group,
             expiring,
             inactive,
-        } => commands::cmd_list(provider, project, group, expiring, inactive),
+        } => commands::cmd_list(provider, project, expiring, inactive),
         Commands::Get { name, raw, copy } => commands::cmd_get(name, raw, copy),
         Commands::Remove { name, force } => commands::cmd_remove(name, force),
         Commands::Update {
@@ -83,7 +77,6 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             url,
             expires,
             active,
-            group,
             verify,
         } => commands::cmd_update(commands::UpdateArgs {
             name,
@@ -100,15 +93,13 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             url,
             expires,
             active,
-            group,
             verify,
         }),
         Commands::Run {
             project,
-            group,
             all,
             command,
-        } => commands::cmd_run(project, group, all, command),
+        } => commands::cmd_run(project, all, command),
         Commands::Import {
             file,
             provider,
@@ -117,11 +108,7 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             source,
             on_conflict,
         } => commands::cmd_import(&file, provider, account, project, source, &on_conflict),
-        Commands::Export {
-            project,
-            group,
-            output,
-        } => commands::cmd_export(project, group, output),
+        Commands::Export { project, output } => commands::cmd_export(project, output),
         Commands::Health => commands::cmd_health(),
         Commands::Verify { name, all } => commands::cmd_verify(name, all),
         Commands::Search { query } => commands::cmd_search(query),
@@ -150,22 +137,12 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             source,
             &on_conflict,
         ),
-        Commands::Group { action } => match action {
-            GroupAction::List => commands::cmd_group_list(),
-            GroupAction::Show { name } => commands::cmd_group_show(&name),
-            GroupAction::Export { name, output } => commands::cmd_group_export(&name, output),
-        },
-        Commands::Template { action } => match action {
-            TemplateAction::List => commands::cmd_template_list(),
-            TemplateAction::Use {
-                name,
-                projects,
-                expires,
-                prefix,
-            } => commands::cmd_template_use(&name, projects, expires, prefix),
-        },
         Commands::Lock => commands::cmd_lock(),
-        Commands::Serve => commands::cmd_serve(),
+        Commands::Serve {
+            transport,
+            host,
+            port,
+        } => commands::cmd_serve(transport, host, port),
         Commands::Setup { tool, all, list } => commands::cmd_setup(tool, all, list),
         Commands::Completions { shell } => {
             let bin_name = std::env::current_exe()
@@ -180,7 +157,5 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             );
             Ok(())
         }
-        Commands::Ui => tui::cmd_tui(),
-        Commands::Web { port } => dashboard::cmd_dashboard(port),
     }
 }
