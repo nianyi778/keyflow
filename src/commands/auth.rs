@@ -149,7 +149,7 @@ fn get_passphrase_gui() -> Result<String> {
         if pass.is_empty() {
             bail!("Passphrase cannot be empty");
         }
-        return Ok(pass);
+        Ok(pass)
     }
     #[cfg(target_os = "linux")]
     {
@@ -164,7 +164,7 @@ fn get_passphrase_gui() -> Result<String> {
         if pass.is_empty() {
             bail!("Passphrase cannot be empty");
         }
-        return Ok(pass);
+        Ok(pass)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
