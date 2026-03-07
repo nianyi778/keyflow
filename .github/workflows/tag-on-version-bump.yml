@@ -1,0 +1,70 @@
+name: Tag On Version Bump
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect Cargo version change
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          current_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [[ -z "$current_version" ]]; then
+            echo "No package version found in Cargo.toml"
+            exit 1
+          fi
+
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            previous_version="$(git show HEAD^:Cargo.toml 2>/dev/null | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)"
+          else
+            previous_version=""
+          fi
+
+          tag_name="v${current_version}"
+
+          echo "current=$current_version" >> "$GITHUB_OUTPUT"
+          echo "previous=$previous_version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag_name" >> "$GITHUB_OUTPUT"
+
+          if [[ "$current_version" == "$previous_version" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git rev-parse "$tag_name" >/dev/null 2>&1 || git ls-remote --tags origin "refs/tags/$tag_name" | grep -q "$tag_name"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        if: steps.version.outputs.changed == 'true'
+        env:
+          TAG_NAME: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.current }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
+          git push origin "$TAG_NAME"
+
+      - name: Summary
+        run: |
+          echo "Current version: ${{ steps.version.outputs.current }}"
+          echo "Previous version: ${{ steps.version.outputs.previous }}"
+          echo "Tag target: ${{ steps.version.outputs.tag }}"
+          echo "Tag created: ${{ steps.version.outputs.changed }}"
