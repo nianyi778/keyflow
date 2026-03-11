@@ -99,6 +99,12 @@ pub enum Commands {
         /// Show inactive keys
         #[arg(long)]
         inactive: bool,
+        /// Maximum number of rows to display
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Number of rows to skip before displaying results
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
     },
 
     /// Get a secret value: `kf get` to select, or `kf get <name>`

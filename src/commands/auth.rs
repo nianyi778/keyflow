@@ -8,6 +8,8 @@ use crate::db::Database;
 use crate::models::{AppConfig, ListFilter};
 use crate::paths;
 
+const SELECT_PAGE_SIZE: usize = 15;
+
 pub fn get_data_dir() -> Result<std::path::PathBuf> {
     paths::data_dir()
 }
@@ -171,6 +173,7 @@ pub(crate) fn select_secret(db: &Database) -> Result<String> {
         .with_prompt("Select secret")
         .items(&items)
         .default(0)
+        .max_length(SELECT_PAGE_SIZE)
         .interact()?;
     Ok(entries[idx].name.clone())
 }

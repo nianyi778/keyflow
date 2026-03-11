@@ -184,7 +184,13 @@ pub fn cmd_list(
     project: Option<String>,
     expiring: bool,
     inactive: bool,
+    limit: usize,
+    offset: usize,
 ) -> Result<()> {
+    if limit == 0 {
+        bail!("--limit must be greater than 0");
+    }
+
     let service = SecretService::new(open_db()?);
     let entries = service.list_entries(&ListFilter {
         provider,
@@ -198,6 +204,17 @@ pub fn cmd_list(
         return Ok(());
     }
 
+    if offset >= entries.len() {
+        println!(
+            "{} No secrets in this page. Total matching secrets: {}",
+            style("ℹ").blue(),
+            entries.len()
+        );
+        return Ok(());
+    }
+
+    let page_entries: Vec<_> = entries.iter().skip(offset).take(limit).collect();
+
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL)
@@ -206,7 +223,7 @@ pub fn cmd_list(
             "Name", "Env Var", "Provider", "Account", "Projects", "Verified", "Expires", "Status",
         ]);
 
-    for entry in &entries {
+    for entry in &page_entries {
         let status = entry.status();
         let status_cell = match status {
             KeyStatus::Active => Cell::new("Active").fg(Color::Green),
@@ -248,7 +265,14 @@ pub fn cmd_list(
     }
 
     println!("{table}");
-    println!("\n{} Total: {} secrets", style("ℹ").blue(), entries.len());
+    let shown_end = offset + page_entries.len();
+    println!(
+        "\n{} Showing {}-{} of {} secrets",
+        style("ℹ").blue(),
+        offset + 1,
+        shown_end,
+        entries.len()
+    );
 
     Ok(())
 }

@@ -59,7 +59,9 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             project,
             expiring,
             inactive,
-        } => commands::cmd_list(provider, project, expiring, inactive),
+            limit,
+            offset,
+        } => commands::cmd_list(provider, project, expiring, inactive, limit, offset),
         Commands::Get { name, raw, copy } => commands::cmd_get(name, raw, copy),
         Commands::Remove { name, force } => commands::cmd_remove(name, force),
         Commands::Update {
