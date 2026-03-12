@@ -1,7 +1,7 @@
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use anyhow::{bail, Result};
-use rand::RngCore;
+use rand::Rng;
 
 const NONCE_LEN: usize = 12;
 const KEY_LEN: usize = 32;
@@ -23,7 +23,7 @@ impl Crypto {
 
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
         let mut nonce_bytes = [0u8; NONCE_LEN];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        rand::rng().fill(&mut nonce_bytes[..]);
         let nonce = Nonce::from_slice(&nonce_bytes);
         let ciphertext = self
             .cipher
@@ -47,7 +47,7 @@ impl Crypto {
 
     pub fn generate_salt() -> Vec<u8> {
         let mut salt = vec![0u8; 32];
-        rand::thread_rng().fill_bytes(&mut salt);
+        rand::rng().fill(&mut salt[..]);
         salt
     }
 }

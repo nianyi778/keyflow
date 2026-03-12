@@ -7,7 +7,7 @@ use std::path::Path;
 
 use crate::commands::helpers::{discover_project_context, infer_required_env_vars};
 use crate::db::Database;
-use crate::models::{self, find_duplicate_groups, KeyStatus, ListFilter, SecretEntry};
+use crate::models::{self, KeyStatus, ListFilter, SecretEntry};
 
 pub struct VaultService<'a> {
     db: &'a Database,
@@ -327,76 +327,9 @@ impl<'a> VaultService<'a> {
     }
 
     pub fn check_health(&self) -> Result<Value> {
-        let entries = self.db.list_secrets(&ListFilter {
-            inactive: true,
-            ..Default::default()
-        })?;
-        let report = models::HealthReport::from_entries(&entries);
-        let summary = models::HealthSummary::from_report(&report, entries.len());
-        let now = Utc::now();
-        let active_entries: Vec<_> = entries.iter().filter(|entry| entry.is_active).collect();
-        let unverified_30 = active_entries
-            .iter()
-            .filter(|entry| (30..60).contains(&entry.unverified_days(now)))
-            .map(|entry| entry.name.clone())
-            .collect::<Vec<_>>();
-        let unverified_60 = active_entries
-            .iter()
-            .filter(|entry| (60..90).contains(&entry.unverified_days(now)))
-            .map(|entry| entry.name.clone())
-            .collect::<Vec<_>>();
-        let unverified_90 = active_entries
-            .iter()
-            .filter(|entry| entry.unverified_days(now) >= 90)
-            .map(|entry| entry.name.clone())
-            .collect::<Vec<_>>();
-
-        let mut provider_old_keys = HashMap::<String, Vec<String>>::new();
-        for entry in &entries {
-            if entry.is_active && !entry.provider.is_empty() && entry.is_unused_for_days(now, 60) {
-                provider_old_keys
-                    .entry(entry.provider.clone())
-                    .or_default()
-                    .push(entry.name.clone());
-            }
-        }
-        let mut provider_old_keys = provider_old_keys
-            .into_iter()
-            .filter(|(_, keys)| keys.len() > 1)
-            .map(|(provider, keys)| json!({ "provider": provider, "keys": keys }))
-            .collect::<Vec<_>>();
-        provider_old_keys.sort_by(|a, b| a["provider"].as_str().cmp(&b["provider"].as_str()));
-
-        let duplicates = find_duplicate_groups(&entries)
-            .into_iter()
-            .map(|group| json!({ "env_var": group.env_var, "names": group.names }))
-            .collect::<Vec<_>>();
-
-        Ok(json!({
-            "summary": summary,
-            "status": if summary.expiry_issues == 0
-                && summary.duplicate_count == 0
-                && summary.inactive_count == 0
-                && summary.metadata_review_count == 0
-                && summary.unused_count == 0 {
-                "ok"
-            } else {
-                "attention"
-            },
-            "expired": { "count": report.expired.len(), "keys": report.expired },
-            "expiring": { "count": report.expiring_soon.len(), "keys": report.expiring_soon },
-            "unused": { "count": report.unused_30d.len(), "keys": report.unused_30d },
-            "inactive": { "count": report.inactive.len(), "keys": report.inactive },
-            "metadata_gaps": { "count": report.metadata_review.len(), "keys": report.metadata_review },
-            "duplicates": { "count": duplicates.len(), "groups": duplicates },
-            "provider_old_keys": { "count": provider_old_keys.len(), "groups": provider_old_keys },
-            "source_quality": report.source_quality,
-            "unverified": {
-                "30_59_days": { "count": unverified_30.len(), "names": unverified_30 },
-                "60_89_days": { "count": unverified_60.len(), "names": unverified_60 },
-                "90_plus_days": { "count": unverified_90.len(), "names": unverified_90 },
-            }
-        }))
+        let service = crate::services::secrets::SecretService::new_ref(self.db);
+        let health = service.health_view()?;
+        Ok(health.to_mcp_json())
     }
 
     pub fn list_keys_for_project(&self, request: ListProjectKeysRequest) -> Result<Value> {
@@ -1030,50 +963,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::Crypto;
+    use crate::mcp::test_helpers::{add_secret, test_db as test_service};
     use std::fs;
     use tempfile::tempdir;
-
-    fn test_service() -> (tempfile::TempDir, Database) {
-        let dir = tempdir().unwrap();
-        let db_path = dir.path().join("keyflow.sqlite");
-        let crypto = Crypto::new("pass123", b"01234567890123456789012345678901").unwrap();
-        let db = Database::open(db_path.to_str().unwrap(), crypto).unwrap();
-        (dir, db)
-    }
-
-    fn add_secret(
-        db: &Database,
-        name: &str,
-        env_var: &str,
-        provider: &str,
-        projects: &[&str],
-        active: bool,
-    ) {
-        let now = Utc::now();
-        let entry = SecretEntry {
-            id: format!("test-{name}"),
-            name: name.to_string(),
-            env_var: env_var.to_string(),
-            provider: provider.to_string(),
-            account_name: "acct".to_string(),
-            org_name: String::new(),
-            description: format!("desc {name}"),
-            source: "manual:test".to_string(),
-            environment: String::new(),
-            permission_profile: String::new(),
-            scopes: vec![],
-            projects: projects.iter().map(|value| value.to_string()).collect(),
-            apply_url: String::new(),
-            expires_at: None,
-            created_at: now,
-            updated_at: now,
-            last_used_at: None,
-            last_verified_at: Some(now),
-            is_active: active,
-        };
-        db.add_secret(&entry, "secret-value").unwrap();
-    }
 
     #[test]
     fn search_keys_supports_filter_and_pagination() {

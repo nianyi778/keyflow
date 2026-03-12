@@ -4,16 +4,30 @@ use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Cell, Color
 use console::style;
 use dialoguer::{Confirm, Input, Password, Select};
 use std::fs;
+use std::io::IsTerminal;
 use std::path::Path;
 
 use crate::commands::auth::{open_db, select_secret};
-use crate::commands::helpers::{
-    detect_project_name, get_default_url, infer_provider, parse_csv, PROVIDERS,
-};
+use crate::commands::helpers::{detect_project_name, get_default_url, parse_csv, PROVIDERS};
+use crate::models::infer_provider;
 use crate::models::{KeyStatus, ListFilter};
 use crate::services::secrets::{
     parse_expires, parse_optional_expires, ImportRequest, SecretDraft, SecretService, SecretUpdate,
 };
+
+pub struct ScanArgs {
+    pub path: String,
+    pub apply: bool,
+    pub recursive: bool,
+    pub new_only: bool,
+    pub skip_common: bool,
+    pub export: Option<String>,
+    pub provider: Option<String>,
+    pub account: Option<String>,
+    pub project: Option<String>,
+    pub source: Option<String>,
+    pub on_conflict: String,
+}
 
 pub struct AddArgs {
     pub env_var: Option<String>,
@@ -64,7 +78,7 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
         paste,
     } = args;
     let service = SecretService::new(open_db()?);
-    let interactive = atty::is(atty::Stream::Stdin);
+    let interactive = std::io::stdin().is_terminal();
 
     let env_var = match env_var {
         Some(e) => e,
@@ -811,33 +825,25 @@ pub fn cmd_search(query: Option<String>) -> Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn cmd_scan(
-    path: &str,
-    apply: bool,
-    recursive: bool,
-    new_only: bool,
-    skip_common: bool,
-    export: Option<String>,
-    provider: Option<String>,
-    account: Option<String>,
-    project: Option<String>,
-    source: Option<String>,
-    on_conflict: &str,
-) -> Result<()> {
-    let scan_path = Path::new(path);
+pub fn cmd_scan(args: ScanArgs) -> Result<()> {
+    let scan_path = Path::new(&args.path);
     if !scan_path.exists() {
-        bail!("Path not found: {}", path);
+        bail!("Path not found: {}", args.path);
+    }
+
+    if !["skip", "overwrite", "rename"].contains(&args.on_conflict.as_str()) {
+        bail!("Invalid --on-conflict value. Use: skip, overwrite, rename");
     }
 
     let service = SecretService::new(open_db()?);
-    let candidates = service.scan_path(scan_path, recursive, skip_common, new_only)?;
+    let candidates =
+        service.scan_path(scan_path, args.recursive, args.skip_common, args.new_only)?;
     if candidates.is_empty() {
         println!("{}", style("No candidate keys found.").dim());
         return Ok(());
     }
 
-    if let Some(ref export_path) = export {
+    if let Some(ref export_path) = args.export {
         let data: Vec<serde_json::Value> = candidates
             .iter()
             .map(|c| {
@@ -895,9 +901,9 @@ pub fn cmd_scan(
         );
     }
 
-    let should_import = if apply {
+    let should_import = if args.apply {
         true
-    } else if atty::is(atty::Stream::Stdout) {
+    } else if std::io::stdout().is_terminal() {
         Confirm::new()
             .with_prompt("Import these candidate keys into KeyFlow?")
             .default(false)
@@ -910,10 +916,29 @@ pub fn cmd_scan(
         println!(
             "\n{} Preview only. Run {} to import without prompt.",
             style("ℹ").blue(),
-            style(format!("kf scan {} --apply", path)).cyan()
+            style(format!("kf scan {} --apply", args.path)).cyan()
         );
         return Ok(());
     }
 
-    cmd_import(path, provider, account, project, source, on_conflict)
+    let provider = args.provider.unwrap_or_else(|| "imported".to_string());
+    let account_name = args.account.unwrap_or_default();
+    let stats = service.import_path(ImportRequest {
+        path: scan_path,
+        provider: &provider,
+        account_name: &account_name,
+        project_override: args.project.as_deref(),
+        source: args.source.as_deref(),
+        on_conflict: &args.on_conflict,
+        recursive: false,
+    })?;
+
+    println!(
+        "\n{} Imported: {}, Overwritten: {}, Skipped: {}",
+        style("✓").green().bold(),
+        stats.imported,
+        stats.overwritten,
+        stats.skipped
+    );
+    Ok(())
 }

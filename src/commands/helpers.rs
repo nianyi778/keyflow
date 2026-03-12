@@ -70,10 +70,6 @@ pub(crate) const PROVIDERS: &[&str] = &[
     "other",
 ];
 
-pub(crate) fn infer_provider(env_var: &str) -> Option<&'static str> {
-    crate::models::infer_provider(env_var)
-}
-
 pub(crate) fn detect_project_name() -> Option<String> {
     discover_project_context(Path::new(".")).map(|context| context.name)
 }
@@ -585,6 +581,7 @@ mod tests {
 
     #[test]
     fn infer_provider_matches_common_prefixes() {
+        use crate::models::infer_provider;
         assert_eq!(infer_provider("OPENAI_API_KEY"), Some("openai"));
         assert_eq!(infer_provider("CF_API_TOKEN"), Some("cloudflare"));
         assert_eq!(infer_provider("UNKNOWN_KEY"), None);

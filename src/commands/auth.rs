@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use console::style;
 use dialoguer::{Password, Select};
 use std::fs;
+use std::io::IsTerminal;
 
 use crate::crypto::Crypto;
 use crate::db::Database;
@@ -121,7 +122,7 @@ fn get_passphrase_inner(noninteractive: bool) -> Result<String> {
         bail!("Vault locked. Run any `kf` command first to unlock, or set KEYFLOW_PASSPHRASE.");
     }
     // 3. Interactive terminal prompt
-    if atty::is(atty::Stream::Stdin) {
+    if std::io::stdin().is_terminal() {
         let pass = Password::new()
             .with_prompt("KeyFlow passphrase")
             .interact()?;

@@ -5,7 +5,7 @@ use keyflow::models::SecretEntry;
 use keyflow::services::secrets::{ImportRequest, SecretDraft, SecretService};
 use tempfile::tempdir;
 
-fn temp_service() -> (tempfile::TempDir, SecretService) {
+fn temp_service() -> (tempfile::TempDir, SecretService<'static>) {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("keyflow.sqlite");
     let crypto = Crypto::new("pass123", b"01234567890123456789012345678901").unwrap();

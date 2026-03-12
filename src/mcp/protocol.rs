@@ -384,43 +384,11 @@ pub(crate) fn classify_anyhow_error(value: anyhow::Error) -> McpError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::Crypto;
-    use crate::models::SecretEntry;
+    use crate::mcp::test_helpers::test_db;
     use std::io::Cursor;
-    use tempfile::tempdir;
-
-    fn test_db() -> (tempfile::TempDir, Database) {
-        let dir = tempdir().unwrap();
-        let db_path = dir.path().join("keyflow.sqlite");
-        let crypto = Crypto::new("pass123", b"01234567890123456789012345678901").unwrap();
-        let db = Database::open(db_path.to_str().unwrap(), crypto).unwrap();
-        (dir, db)
-    }
 
     fn add_secret(db: &Database, name: &str, env_var: &str, provider: &str, projects: &[&str]) {
-        let now = chrono::Utc::now();
-        let entry = SecretEntry {
-            id: format!("test-{name}"),
-            name: name.to_string(),
-            env_var: env_var.to_string(),
-            provider: provider.to_string(),
-            account_name: "acct".to_string(),
-            org_name: String::new(),
-            description: format!("desc {name}"),
-            source: "manual:test".to_string(),
-            environment: String::new(),
-            permission_profile: String::new(),
-            scopes: vec![],
-            projects: projects.iter().map(|value| value.to_string()).collect(),
-            apply_url: String::new(),
-            expires_at: None,
-            created_at: now,
-            updated_at: now,
-            last_used_at: None,
-            last_verified_at: Some(now),
-            is_active: true,
-        };
-        db.add_secret(&entry, "secret-value").unwrap();
+        crate::mcp::test_helpers::add_secret(db, name, env_var, provider, projects, true);
     }
 
     #[test]

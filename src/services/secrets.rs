@@ -3,8 +3,9 @@ use chrono::{DateTime, Utc};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::commands::helpers::{detect_project_name_in_dir, infer_provider, parse_date, SKIP_VARS};
+use crate::commands::helpers::{detect_project_name_in_dir, parse_date, SKIP_VARS};
 use crate::db::{Database, MetadataUpdate};
+use crate::models::infer_provider;
 use crate::models::{
     find_duplicate_groups, DuplicateGroup, HealthReport, HealthSummary, KeyStatus, ListFilter,
     SecretEntry,
@@ -89,6 +90,51 @@ pub struct HealthView {
     pub inactive: Vec<String>,
 }
 
+impl HealthView {
+    pub fn to_mcp_json(&self) -> serde_json::Value {
+        let duplicates: Vec<serde_json::Value> = self
+            .duplicates
+            .iter()
+            .map(|group| serde_json::json!({ "env_var": group.env_var, "names": group.names }))
+            .collect();
+
+        let provider_old_keys: Vec<serde_json::Value> = self
+            .provider_old_keys
+            .iter()
+            .map(|(provider, keys)| serde_json::json!({ "provider": provider, "keys": keys }))
+            .collect();
+
+        let status = if self.summary.expiry_issues == 0
+            && self.summary.duplicate_count == 0
+            && self.summary.inactive_count == 0
+            && self.summary.metadata_review_count == 0
+            && self.summary.unused_count == 0
+        {
+            "ok"
+        } else {
+            "attention"
+        };
+
+        serde_json::json!({
+            "summary": self.summary,
+            "status": status,
+            "expired": { "count": self.report.expired.len(), "keys": self.report.expired },
+            "expiring": { "count": self.report.expiring_soon.len(), "keys": self.report.expiring_soon },
+            "unused": { "count": self.report.unused_30d.len(), "keys": self.report.unused_30d },
+            "inactive": { "count": self.report.inactive.len(), "keys": self.report.inactive },
+            "metadata_gaps": { "count": self.report.metadata_review.len(), "keys": self.report.metadata_review },
+            "duplicates": { "count": duplicates.len(), "groups": duplicates },
+            "provider_old_keys": { "count": provider_old_keys.len(), "groups": provider_old_keys },
+            "source_quality": self.report.source_quality,
+            "unverified": {
+                "30_59_days": { "count": self.unverified_30.len(), "names": &self.unverified_30 },
+                "60_89_days": { "count": self.unverified_60.len(), "names": &self.unverified_60 },
+                "90_plus_days": { "count": self.unverified_90.len(), "names": &self.unverified_90 },
+            }
+        })
+    }
+}
+
 pub struct RunEnvResolution {
     pub project: Option<String>,
     pub env_pairs: Vec<(String, String)>,
@@ -99,13 +145,36 @@ pub struct SecretValueView {
     pub value: String,
 }
 
-pub struct SecretService {
-    db: Database,
+enum DbHolder<'a> {
+    Owned(Box<Database>),
+    Borrowed(&'a Database),
 }
 
-impl SecretService {
-    pub fn new(db: Database) -> Self {
-        Self { db }
+impl<'a> std::ops::Deref for DbHolder<'a> {
+    type Target = Database;
+    fn deref(&self) -> &Database {
+        match self {
+            DbHolder::Owned(db) => db,
+            DbHolder::Borrowed(db) => db,
+        }
+    }
+}
+
+pub struct SecretService<'a> {
+    db: DbHolder<'a>,
+}
+
+impl<'a> SecretService<'a> {
+    pub fn new(db: Database) -> SecretService<'static> {
+        SecretService {
+            db: DbHolder::Owned(Box::new(db)),
+        }
+    }
+
+    pub fn new_ref(db: &'a Database) -> Self {
+        Self {
+            db: DbHolder::Borrowed(db),
+        }
     }
 
     pub fn db(&self) -> &Database {

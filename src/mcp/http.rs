@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
 
 use crate::db::Database;
@@ -105,21 +105,28 @@ struct HttpRequest {
 }
 
 fn read_http_request(stream: &mut impl Read) -> Result<HttpRequest> {
-    let mut header_bytes = Vec::new();
-    let mut buf = [0u8; 1];
-    while !header_bytes.ends_with(b"\r\n\r\n") {
-        let bytes_read = stream.read(&mut buf)?;
+    let mut reader = BufReader::new(stream);
+    let mut header_text = String::new();
+    let mut total_header_bytes = 0usize;
+
+    loop {
+        let mut line = String::new();
+        let bytes_read = reader
+            .read_line(&mut line)
+            .context("Failed to read HTTP header line")?;
         if bytes_read == 0 {
             bail!("Unexpected EOF while reading HTTP headers");
         }
-        header_bytes.push(buf[0]);
-        if header_bytes.len() > 1024 * 1024 {
+        total_header_bytes += bytes_read;
+        if total_header_bytes > 1024 * 1024 {
             bail!("HTTP headers too large");
         }
+        if line == "\r\n" || line == "\n" {
+            break;
+        }
+        header_text.push_str(&line);
     }
 
-    let header_text =
-        String::from_utf8(header_bytes).context("HTTP headers are not valid UTF-8")?;
     let mut lines = header_text.split("\r\n").filter(|line| !line.is_empty());
     let request_line = lines
         .next()
@@ -148,7 +155,7 @@ fn read_http_request(stream: &mut impl Read) -> Result<HttpRequest> {
 
     let mut body = vec![0u8; content_length];
     if content_length > 0 {
-        stream.read_exact(&mut body)?;
+        reader.read_exact(&mut body)?;
     }
 
     Ok(HttpRequest { method, path, body })
@@ -215,45 +222,8 @@ fn write_http_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::Crypto;
-    use crate::models::SecretEntry;
-    use chrono::Utc;
+    use crate::mcp::test_helpers::{add_secret, test_db};
     use std::io::Cursor;
-    use tempfile::tempdir;
-
-    fn test_db() -> (tempfile::TempDir, Database) {
-        let dir = tempdir().unwrap();
-        let db_path = dir.path().join("keyflow.sqlite");
-        let crypto = Crypto::new("pass123", b"01234567890123456789012345678901").unwrap();
-        let db = Database::open(db_path.to_str().unwrap(), crypto).unwrap();
-        (dir, db)
-    }
-
-    fn add_secret(db: &Database) {
-        let now = Utc::now();
-        let entry = SecretEntry {
-            id: "test-openai".to_string(),
-            name: "openai-main".to_string(),
-            env_var: "OPENAI_API_KEY".to_string(),
-            provider: "openai".to_string(),
-            account_name: "acct".to_string(),
-            org_name: String::new(),
-            description: "desc".to_string(),
-            source: "manual:test".to_string(),
-            environment: String::new(),
-            permission_profile: String::new(),
-            scopes: vec![],
-            projects: vec!["demo".to_string()],
-            apply_url: String::new(),
-            expires_at: None,
-            created_at: now,
-            updated_at: now,
-            last_used_at: None,
-            last_verified_at: Some(now),
-            is_active: true,
-        };
-        db.add_secret(&entry, "secret-value").unwrap();
-    }
 
     struct TestStream {
         reader: Cursor<Vec<u8>>,
@@ -293,7 +263,14 @@ mod tests {
     #[test]
     fn http_transport_handles_post_mcp_request() {
         let (_dir, db) = test_db();
-        add_secret(&db);
+        add_secret(
+            &db,
+            "openai-main",
+            "OPENAI_API_KEY",
+            "openai",
+            &["demo"],
+            true,
+        );
         let service = VaultService::new(&db);
         let prompts = PromptRegistry::new();
         let registry = ToolRegistry::new();

@@ -198,100 +198,62 @@ impl Database {
     }
 
     pub fn update_secret_metadata(&self, name: &str, update: &MetadataUpdate<'_>) -> Result<()> {
-        let MetadataUpdate {
-            provider,
-            account_name,
-            org_name,
-            description,
-            source,
-            environment,
-            permission_profile,
-            scopes,
-            projects,
-            apply_url,
-            expires_at,
-            last_verified_at,
-            is_active,
-        } = update;
-
         let now = Utc::now().to_rfc3339();
-        let mut updates = vec!["updated_at = ?1".to_string()];
-        let mut bind_idx = 2;
+        let mut set_clauses = vec!["updated_at = ?1".to_string()];
         let mut bind_values: Vec<String> = vec![now];
 
-        if let Some(value) = provider {
-            bind_values.push(value.to_string());
-            updates.push(format!("provider = ?{}", bind_idx));
-            bind_idx += 1;
+        let mut push = |column: &str, value: String| {
+            bind_values.push(value);
+            set_clauses.push(format!("{} = ?{}", column, bind_values.len()));
+        };
+
+        if let Some(v) = update.provider {
+            push("provider", v.to_string());
         }
-        if let Some(value) = account_name {
-            bind_values.push(value.to_string());
-            updates.push(format!("account_name = ?{}", bind_idx));
-            bind_idx += 1;
+        if let Some(v) = update.account_name {
+            push("account_name", v.to_string());
         }
-        if let Some(value) = description {
-            bind_values.push(value.to_string());
-            updates.push(format!("description = ?{}", bind_idx));
-            bind_idx += 1;
+        if let Some(v) = update.description {
+            push("description", v.to_string());
         }
-        if let Some(value) = source {
-            bind_values.push(value.to_string());
-            updates.push(format!("source = ?{}", bind_idx));
-            bind_idx += 1;
+        if let Some(v) = update.source {
+            push("source", v.to_string());
         }
-        if let Some(value) = scopes {
-            bind_values.push(serde_json::to_string(value)?);
-            updates.push(format!("scopes = ?{}", bind_idx));
-            bind_idx += 1;
+        if let Some(v) = update.scopes {
+            push("scopes", serde_json::to_string(v)?);
         }
-        if let Some(value) = projects {
-            bind_values.push(serde_json::to_string(value)?);
-            updates.push(format!("projects = ?{}", bind_idx));
-            bind_idx += 1;
+        if let Some(v) = update.projects {
+            push("projects", serde_json::to_string(v)?);
         }
-        if let Some(value) = apply_url {
-            bind_values.push(value.to_string());
-            updates.push(format!("apply_url = ?{}", bind_idx));
-            bind_idx += 1;
+        if let Some(v) = update.apply_url {
+            push("apply_url", v.to_string());
         }
-        if let Some(value) = expires_at {
-            bind_values.push(value.map(|date| date.to_rfc3339()).unwrap_or_default());
-            updates.push(format!("expires_at = ?{}", bind_idx));
-            bind_idx += 1;
+        if let Some(v) = update.expires_at {
+            push("expires_at", v.map(|d| d.to_rfc3339()).unwrap_or_default());
         }
-        if let Some(value) = last_verified_at {
-            bind_values.push(value.map(|date| date.to_rfc3339()).unwrap_or_default());
-            updates.push(format!("last_verified_at = ?{}", bind_idx));
-            bind_idx += 1;
+        if let Some(v) = update.last_verified_at {
+            push(
+                "last_verified_at",
+                v.map(|d| d.to_rfc3339()).unwrap_or_default(),
+            );
         }
-        if let Some(value) = *is_active {
-            bind_values.push(if value {
-                "1".to_string()
-            } else {
-                "0".to_string()
-            });
-            updates.push(format!("is_active = ?{}", bind_idx));
-            bind_idx += 1;
+        if let Some(v) = update.is_active {
+            push("is_active", if v { "1" } else { "0" }.to_string());
         }
-        if let Some(value) = org_name {
-            bind_values.push(value.to_string());
-            updates.push(format!("org_name = ?{}", bind_idx));
-            bind_idx += 1;
+        if let Some(v) = update.org_name {
+            push("org_name", v.to_string());
         }
-        if let Some(value) = environment {
-            bind_values.push(value.to_string());
-            updates.push(format!("environment = ?{}", bind_idx));
-            bind_idx += 1;
+        if let Some(v) = update.environment {
+            push("environment", v.to_string());
         }
-        if let Some(value) = permission_profile {
-            bind_values.push(value.to_string());
-            updates.push(format!("permission_profile = ?{}", bind_idx));
+        if let Some(v) = update.permission_profile {
+            push("permission_profile", v.to_string());
         }
 
         bind_values.push(name.to_string());
         let sql = format!(
             "UPDATE secrets SET {} WHERE name = ?{}",
-            updates.join(", "),
+            set_clauses.join(", "),
             bind_values.len()
         );
 
@@ -325,16 +287,63 @@ impl Database {
     }
 
     pub fn get_all_for_env(&self, project: Option<&str>) -> Result<Vec<(String, String)>> {
-        let entries = self.list_secrets(&ListFilter {
-            project: project.map(|value| value.to_string()),
-            ..Default::default()
+        let mut sql =
+            "SELECT env_var, encrypted_value, name FROM secrets WHERE is_active = 1".to_string();
+        let mut bind_values: Vec<String> = Vec::new();
+
+        if let Some(project) = project {
+            let escaped = project
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            bind_values.push(format!("%\"{}\"%", escaped));
+            sql.push_str(&format!(
+                " AND projects LIKE ?{} ESCAPE '\\'",
+                bind_values.len()
+            ));
+        }
+
+        sql.push_str(" ORDER BY provider, name");
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::types::ToSql> = bind_values
+            .iter()
+            .map(|value| value as &dyn rusqlite::types::ToSql)
+            .collect();
+        let rows = stmt.query_map(params.as_slice(), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?;
 
+        let now = Utc::now().to_rfc3339();
         let mut result = Vec::new();
-        for entry in &entries {
-            let value = self.get_secret_value(&entry.name)?;
-            result.push((entry.env_var.clone(), value));
+        let mut names = Vec::new();
+        for row in rows {
+            let (env_var, encrypted, name) = row?;
+            let decrypted = self.crypto.decrypt(&encrypted)?;
+            let value = String::from_utf8(decrypted).context("Secret value is not valid UTF-8")?;
+            result.push((env_var, value));
+            names.push(name);
         }
+
+        // Batch update last_used_at for all retrieved secrets
+        if !names.is_empty() {
+            let placeholders: Vec<String> =
+                (1..=names.len()).map(|i| format!("?{}", i + 1)).collect();
+            let update_sql = format!(
+                "UPDATE secrets SET last_used_at = ?1 WHERE name IN ({})",
+                placeholders.join(", ")
+            );
+            let mut update_params: Vec<&dyn rusqlite::types::ToSql> = vec![&now];
+            for name in &names {
+                update_params.push(name);
+            }
+            self.conn.execute(&update_sql, update_params.as_slice())?;
+        }
+
         Ok(result)
     }
 
@@ -366,66 +375,54 @@ impl Database {
     }
 
     pub fn reencrypt_all(&self, pairs: &[(String, Vec<u8>)], new_crypto: &Crypto) -> Result<()> {
-        self.conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> Result<()> {
-            for (name, plaintext) in pairs {
-                let new_encrypted = new_crypto.encrypt(plaintext)?;
-                self.conn.execute(
-                    "UPDATE secrets SET encrypted_value = ?1 WHERE name = ?2",
-                    params![new_encrypted, name],
-                )?;
-            }
-            Ok(())
-        })();
-
-        match result {
-            Ok(()) => {
-                self.conn.execute_batch("COMMIT")?;
-                Ok(())
-            }
-            Err(error) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
-                Err(error)
-            }
+        let tx = self.conn.unchecked_transaction()?;
+        for (name, plaintext) in pairs {
+            let new_encrypted = new_crypto.encrypt(plaintext)?;
+            tx.execute(
+                "UPDATE secrets SET encrypted_value = ?1 WHERE name = ?2",
+                params![new_encrypted, name],
+            )?;
         }
+        tx.commit()?;
+        Ok(())
     }
 
     fn row_to_entry(&self, row: &rusqlite::Row) -> Result<SecretEntry> {
-        let scopes_str: String = row.get_unwrap("scopes");
-        let projects_str: String = row.get_unwrap("projects");
-        let expires_str: Option<String> = row.get_unwrap("expires_at");
-        let last_used_str: Option<String> = row.get_unwrap("last_used_at");
-        let last_verified_str: Option<String> = row.get_unwrap("last_verified_at");
+        let idx = |col: &str| -> rusqlite::Result<usize> { row.as_ref().column_index(col) };
+
+        let scopes_str: String = row.get(idx("scopes")?)?;
+        let projects_str: String = row.get(idx("projects")?)?;
+        let expires_str: Option<String> = row.get(idx("expires_at")?)?;
+        let last_used_str: Option<String> = row.get(idx("last_used_at")?)?;
+        let last_verified_str: Option<String> = row.get(idx("last_verified_at")?)?;
+        let created_str: String = row.get(idx("created_at")?)?;
+        let updated_str: String = row.get(idx("updated_at")?)?;
 
         Ok(SecretEntry {
-            id: row.get_unwrap("id"),
-            name: row.get_unwrap("name"),
-            env_var: row.get_unwrap("env_var"),
-            provider: row.get_unwrap("provider"),
-            account_name: row.get_unwrap("account_name"),
-            org_name: row.get_unwrap("org_name"),
-            description: row.get_unwrap("description"),
-            source: row.get_unwrap("source"),
-            environment: row.get_unwrap("environment"),
-            permission_profile: row.get_unwrap("permission_profile"),
+            id: row.get(idx("id")?)?,
+            name: row.get(idx("name")?)?,
+            env_var: row.get(idx("env_var")?)?,
+            provider: row.get(idx("provider")?)?,
+            account_name: row.get(idx("account_name")?)?,
+            org_name: row.get(idx("org_name")?)?,
+            description: row.get(idx("description")?)?,
+            source: row.get(idx("source")?)?,
+            environment: row.get(idx("environment")?)?,
+            permission_profile: row.get(idx("permission_profile")?)?,
             scopes: serde_json::from_str(&scopes_str).unwrap_or_default(),
             projects: serde_json::from_str(&projects_str).unwrap_or_default(),
-            apply_url: row.get_unwrap("apply_url"),
+            apply_url: row.get(idx("apply_url")?)?,
             expires_at: expires_str.and_then(|value| {
                 DateTime::parse_from_rfc3339(&value)
                     .ok()
                     .map(|date| date.with_timezone(&Utc))
             }),
-            created_at: DateTime::parse_from_rfc3339(
-                &row.get::<_, String>(row.as_ref().column_index("created_at")?)?,
-            )
-            .map(|date| date.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now()),
-            updated_at: DateTime::parse_from_rfc3339(
-                &row.get::<_, String>(row.as_ref().column_index("updated_at")?)?,
-            )
-            .map(|date| date.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now()),
+            created_at: DateTime::parse_from_rfc3339(&created_str)
+                .map(|date| date.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+            updated_at: DateTime::parse_from_rfc3339(&updated_str)
+                .map(|date| date.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
             last_used_at: last_used_str.and_then(|value| {
                 DateTime::parse_from_rfc3339(&value)
                     .ok()
@@ -436,7 +433,7 @@ impl Database {
                     .ok()
                     .map(|date| date.with_timezone(&Utc))
             }),
-            is_active: row.get_unwrap("is_active"),
+            is_active: row.get(idx("is_active")?)?,
         })
     }
 }
