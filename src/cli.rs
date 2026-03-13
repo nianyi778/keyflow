@@ -321,4 +321,36 @@ pub enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+
+    /// Cloud sync: push/pull encrypted secrets across devices
+    #[command(subcommand)]
+    Sync(SyncCommands),
+}
+
+#[derive(Subcommand)]
+pub enum SyncCommands {
+    /// Initialize sync with a remote endpoint
+    Init {
+        /// Worker endpoint URL (e.g. https://keyflow-sync.xxx.workers.dev)
+        #[arg(long)]
+        endpoint: String,
+    },
+
+    /// Push local changes to remote
+    Push,
+
+    /// Pull remote changes to local
+    Pull,
+
+    /// Bidirectional sync (pull then push)
+    Run,
+
+    /// Show sync status
+    Status,
+
+    /// Deploy sync worker to Cloudflare
+    Deploy,
+
+    /// Disconnect from sync (remove local config)
+    Disconnect,
 }
