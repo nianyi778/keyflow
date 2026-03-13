@@ -4,17 +4,18 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],
+  "account_id": "ad48867bb0bbd3ccce8fb30e1ea42a81",
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "keyflow-sync",
-      "database_id": "PLACEHOLDER_REPLACE_AFTER_D1_CREATE"
+      "database_id": "a113b96b-f8cc-4a67-a6d0-623ec3bddae9"
     }
   ],
   "kv_namespaces": [
     {
       "binding": "KV",
-      "id": "PLACEHOLDER_REPLACE_AFTER_KV_CREATE"
+      "id": "8ad3a1166ec54cfdb7ccb6b80e2110fd"
     }
   ]
 }
