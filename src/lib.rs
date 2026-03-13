@@ -59,9 +59,7 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             project,
             expiring,
             inactive,
-            limit,
-            offset,
-        } => commands::cmd_list(provider, project, expiring, inactive, limit, offset),
+        } => commands::cmd_list(provider, project, expiring, inactive),
         Commands::Get { name, raw, copy } => commands::cmd_get(name, raw, copy),
         Commands::Remove { name, force, purge } => commands::cmd_remove(name, force, purge),
         Commands::Update {
@@ -119,11 +117,7 @@ fn dispatch_command(cli: Cli) -> Result<()> {
         } => commands::cmd_export(project, environment, output),
         Commands::Health { verbose } => commands::cmd_health(verbose),
         Commands::Verify { name, all } => commands::cmd_verify(name, all),
-        Commands::Search {
-            query,
-            limit,
-            offset,
-        } => commands::cmd_search(query, limit, offset),
+        Commands::Search { query } => commands::cmd_search(query),
         Commands::Scan {
             path,
             apply,

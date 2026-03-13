@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use console::style;
-use dialoguer::{Password, Select};
+use dialoguer::{FuzzySelect, Password};
 use std::fs;
 use std::io::IsTerminal;
 
@@ -8,8 +8,6 @@ use crate::crypto::Crypto;
 use crate::db::Database;
 use crate::models::{AppConfig, ListFilter};
 use crate::paths;
-
-const SELECT_PAGE_SIZE: usize = 15;
 
 pub fn get_data_dir() -> Result<std::path::PathBuf> {
     paths::data_dir()
@@ -170,11 +168,10 @@ pub(crate) fn select_secret(db: &Database) -> Result<String> {
         .iter()
         .map(|e| format!("{:<28} {:<24} {}", e.name, e.env_var, e.provider))
         .collect();
-    let idx = Select::new()
-        .with_prompt("Select secret")
+    let idx = FuzzySelect::new()
+        .with_prompt("Select secret (type to filter)")
         .items(&items)
         .default(0)
-        .max_length(SELECT_PAGE_SIZE)
         .interact()?;
     Ok(entries[idx].name.clone())
 }

@@ -99,12 +99,6 @@ pub enum Commands {
         /// Show inactive keys
         #[arg(long)]
         inactive: bool,
-        /// Maximum number of rows to display
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-        /// Number of rows to skip before displaying results
-        #[arg(long, default_value_t = 0)]
-        offset: usize,
     },
 
     /// Get a secret value: `kf get` to select, or `kf get <name>`
@@ -252,12 +246,6 @@ pub enum Commands {
     Search {
         /// Search query (omit for interactive prompt)
         query: Option<String>,
-        /// Maximum number of results to display
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-        /// Number of results to skip before displaying
-        #[arg(long, default_value_t = 0)]
-        offset: usize,
     },
 
     /// Scan a .env file or project directory for candidate keys before importing
