@@ -249,13 +249,21 @@ pub fn cmd_sync(sub: SyncCommands) -> Result<()> {
 
 fn cmd_sync_init(endpoint: String) -> Result<()> {
     let endpoint = endpoint.trim_end_matches('/').to_string();
-    let passphrase = Password::new()
-        .with_prompt("Enter sync passphrase (used to encrypt data in transit):")
-        .with_confirmation("Confirm sync passphrase", "Passphrases don't match")
-        .interact()?;
+
+    // Try to use vault passphrase (same as local vault)
+    let passphrase = match get_passphrase() {
+        Ok(pass) => pass,
+        Err(_) => {
+            // Vault not initialized or locked - prompt for passphrase
+            Password::new()
+                .with_prompt("Enter vault passphrase (will also be used for sync):")
+                .with_confirmation("Confirm passphrase", "Passphrases don't match")
+                .interact()?
+        }
+    };
 
     if passphrase.is_empty() {
-        bail!("Sync passphrase cannot be empty");
+        bail!("Passphrase cannot be empty");
     }
 
     let sync_salt_bytes = Crypto::generate_salt();
@@ -303,13 +311,8 @@ fn cmd_sync_init(endpoint: String) -> Result<()> {
 
 fn cmd_sync_push() -> Result<()> {
     let mut config = load_sync_config()?;
-    let sync_passphrase = Password::new().with_prompt("Sync passphrase:").interact()?;
-    if sync_passphrase.is_empty() {
-        bail!("Sync passphrase cannot be empty");
-    }
-    let sync_crypto = make_sync_crypto(&sync_passphrase, &config.sync_salt)?;
-
-    let _ = get_passphrase()?;
+    let vault_passphrase = get_passphrase()?;
+    let sync_crypto = make_sync_crypto(&vault_passphrase, &config.sync_salt)?;
     let service = SecretService::new(open_db()?);
     let db = service.db();
 
@@ -391,13 +394,8 @@ fn cmd_sync_push() -> Result<()> {
 
 fn cmd_sync_pull() -> Result<()> {
     let mut config = load_sync_config()?;
-    let sync_passphrase = Password::new().with_prompt("Sync passphrase:").interact()?;
-    if sync_passphrase.is_empty() {
-        bail!("Sync passphrase cannot be empty");
-    }
-    let sync_crypto = make_sync_crypto(&sync_passphrase, &config.sync_salt)?;
-
-    let _ = get_passphrase()?;
+    let vault_passphrase = get_passphrase()?;
+    let sync_crypto = make_sync_crypto(&vault_passphrase, &config.sync_salt)?;
     let service = SecretService::new(open_db()?);
     let db = service.db();
 
