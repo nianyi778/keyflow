@@ -3,6 +3,7 @@ use chrono::Utc;
 use console::style;
 use dialoguer::{Confirm, Password};
 use std::fs;
+use std::io::IsTerminal;
 use std::path::Path;
 
 use crate::commands::auth::{get_data_dir, get_passphrase, load_config, open_db, save_keyfile};
@@ -76,6 +77,61 @@ pub fn cmd_init(passphrase_arg: Option<String>) -> Result<()> {
     println!("\n{}", style("Next steps:").bold());
     println!("  1. Add secrets:     {}", style("kf add").cyan());
     println!("  2. Connect AI tools: {}", style("kf setup").cyan());
+
+    if std::io::stdin().is_terminal() {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let has_env_files = cwd.join(".env").exists()
+            || cwd.join(".env.local").exists()
+            || cwd.join(".env.example").exists();
+
+        if has_env_files {
+            println!();
+            if Confirm::new()
+                .with_prompt(format!(
+                    "Found .env files in current directory ({}). Scan and import?",
+                    style(cwd.display()).cyan()
+                ))
+                .default(true)
+                .interact()?
+            {
+                let crypto = Crypto::new(&passphrase, &salt)?;
+                let db = Database::open(db_path.to_str().unwrap(), crypto)?;
+                let service = crate::services::secrets::SecretService::new(db);
+                let import_result = service.import_path(crate::services::secrets::ImportRequest {
+                    path: &cwd,
+                    provider: "imported",
+                    account_name: "",
+                    project_override: None,
+                    source: Some("init-scan"),
+                    on_conflict: "skip",
+                    recursive: false,
+                });
+                match import_result {
+                    Ok(stats) => {
+                        if stats.imported > 0 {
+                            println!(
+                                "  {} Imported {} secrets from current directory",
+                                style("✓").green().bold(),
+                                stats.imported
+                            );
+                        } else {
+                            println!(
+                                "  {} No importable secrets found (keys may be empty or skipped)",
+                                style("ℹ").blue()
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        println!(
+                            "  {} Could not import from current directory (this is fine, add secrets manually)",
+                            style("ℹ").blue()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     println!(
         "\nTip: Set {} to skip passphrase prompts.",
         style("KEYFLOW_PASSPHRASE").yellow()

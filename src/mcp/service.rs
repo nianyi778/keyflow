@@ -595,6 +595,67 @@ impl<'a> VaultService<'a> {
         } else {
             "ready"
         };
+        let human_summary = if is_ready && attention.is_empty() {
+            format!(
+                "Project '{}' is fully ready. All {} required secrets are healthy.",
+                request.project,
+                required_vars.len()
+            )
+        } else if is_ready {
+            let attention_names: Vec<&str> = attention
+                .iter()
+                .filter_map(|a| a.get("env_var").and_then(|v| v.as_str()))
+                .collect();
+            format!(
+                "Project '{}' can run but {} keys need attention: {}.",
+                request.project,
+                attention.len(),
+                attention_names.join(", ")
+            )
+        } else {
+            let missing_names: Vec<&str> = missing
+                .iter()
+                .filter_map(|m| m.get("env_var").and_then(|v| v.as_str()))
+                .collect();
+            let expired_names: Vec<&str> = expired
+                .iter()
+                .filter_map(|e| e.get("env_var").and_then(|v| v.as_str()))
+                .collect();
+            let mut parts = Vec::new();
+            if !missing_names.is_empty() {
+                parts.push(format!("missing: {}", missing_names.join(", ")));
+            }
+            if !expired_names.is_empty() {
+                parts.push(format!("expired: {}", expired_names.join(", ")));
+            }
+            format!(
+                "Project '{}' is NOT ready. {} out of {} required keys have issues. {}",
+                request.project,
+                missing.len() + expired.len(),
+                required_vars.len(),
+                parts.join("; ")
+            )
+        };
+        let next_steps: Vec<String> = missing
+            .iter()
+            .filter_map(|m| {
+                m.get("suggestion")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
+            .chain(expired.iter().filter_map(|e| {
+                let name = e.get("name").and_then(|v| v.as_str())?;
+                let url = e
+                    .get("apply_url")
+                    .and_then(|v| v.as_str())
+                    .filter(|u| !u.is_empty());
+                Some(if let Some(url) = url {
+                    format!("Rotate '{}' - renew at {}", name, url)
+                } else {
+                    format!("Rotate '{}' - expired key needs replacement", name)
+                })
+            }))
+            .collect();
         Ok(json!({
             "project": request.project,
             "mode": if inferred.is_some() { "inferred" } else { "explicit" },
@@ -617,6 +678,8 @@ impl<'a> VaultService<'a> {
             "missing": missing,
             "expired": expired,
             "actions": actions,
+            "human_summary": human_summary,
+            "next_steps": next_steps,
             "total_required": required_vars.len(),
             "total_available": available.len() + attention.len(),
             "healthy_count": available.len(),

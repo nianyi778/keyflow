@@ -121,6 +121,10 @@ impl Database {
                 bind_values.len()
             ));
         }
+        if let Some(environment) = &filter.environment {
+            bind_values.push(environment.clone());
+            sql.push_str(&format!(" AND environment = ?{}", bind_values.len()));
+        }
         if !filter.inactive {
             sql.push_str(" AND is_active = 1");
         }

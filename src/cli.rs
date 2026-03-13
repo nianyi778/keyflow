@@ -126,6 +126,9 @@ pub enum Commands {
         /// Skip confirmation
         #[arg(long, short)]
         force: bool,
+        /// Permanently delete (default: deactivate only)
+        #[arg(long)]
+        purge: bool,
     },
 
     /// Update a secret: `kf update` to select, or `kf update <name>`
@@ -184,6 +187,9 @@ pub enum Commands {
         /// Inject all secrets (skip project auto-detection)
         #[arg(short, long)]
         all: bool,
+        /// Preview which secrets would be injected without running the command
+        #[arg(long)]
+        dry_run: bool,
         /// The command and arguments to run
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
@@ -208,6 +214,9 @@ pub enum Commands {
         /// Conflict strategy: skip (default), overwrite, rename
         #[arg(long, default_value = "skip")]
         on_conflict: String,
+        /// Skip confirmation prompt (import directly)
+        #[arg(long, short)]
+        yes: bool,
     },
 
     /// Export secrets as .env format
@@ -215,13 +224,20 @@ pub enum Commands {
         /// Filter by project
         #[arg(long)]
         project: Option<String>,
+        /// Filter by environment (e.g. prod, staging, dev)
+        #[arg(long)]
+        environment: Option<String>,
         /// Output file (default: stdout)
         #[arg(long, short)]
         output: Option<String>,
     },
 
     /// Check health status of all secrets
-    Health,
+    Health {
+        /// Show full details for all sections
+        #[arg(long, short)]
+        verbose: bool,
+    },
 
     /// Mark one or more secrets as verified now
     Verify {
@@ -236,6 +252,12 @@ pub enum Commands {
     Search {
         /// Search query (omit for interactive prompt)
         query: Option<String>,
+        /// Maximum number of results to display
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Number of results to skip before displaying
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
     },
 
     /// Scan a .env file or project directory for candidate keys before importing
@@ -254,6 +276,9 @@ pub enum Commands {
         /// Skip common non-secret variables (PATH, HOME, NODE_ENV, etc.)
         #[arg(long)]
         skip_common: bool,
+        /// Maximum number of candidates to preview
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
         /// Export candidate list to a file instead of printing
         #[arg(long)]
         export: Option<String>,

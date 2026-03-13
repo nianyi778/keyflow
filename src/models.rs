@@ -225,6 +225,7 @@ pub struct DuplicateGroup {
 pub struct ListFilter {
     pub provider: Option<String>,
     pub project: Option<String>,
+    pub environment: Option<String>,
     pub expiring: bool,
     pub inactive: bool,
 }

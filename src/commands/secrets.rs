@@ -21,6 +21,7 @@ pub struct ScanArgs {
     pub recursive: bool,
     pub new_only: bool,
     pub skip_common: bool,
+    pub limit: usize,
     pub export: Option<String>,
     pub provider: Option<String>,
     pub account: Option<String>,
@@ -149,15 +150,9 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
                     style("▸").dim(),
                     style(&detected).cyan()
                 );
-            }
-            if interactive {
-                let p: String = Input::new()
-                    .with_prompt("Project tags (comma-separated)")
-                    .default(detected)
-                    .interact_text()?;
-                parse_csv(&p)
-            } else {
                 parse_csv(&detected)
+            } else {
+                vec![]
             }
         }
     };
@@ -209,6 +204,7 @@ pub fn cmd_list(
     let entries = service.list_entries(&ListFilter {
         provider,
         project,
+        environment: None,
         expiring,
         inactive,
     })?;
@@ -288,6 +284,35 @@ pub fn cmd_list(
         entries.len()
     );
 
+    let now = Utc::now();
+    let attention: Vec<String> = entries
+        .iter()
+        .filter_map(|entry| match entry.status() {
+            KeyStatus::Expired => Some(format!("{} (expired)", entry.name)),
+            KeyStatus::ExpiringSoon => {
+                let days = entry
+                    .expires_at
+                    .map(|expires| (expires - now).num_days().max(0))
+                    .unwrap_or(0);
+                Some(format!("{} (expiring in {} days)", entry.name, days))
+            }
+            _ => None,
+        })
+        .collect();
+    if !attention.is_empty() {
+        let preview_limit = 5;
+        let mut preview: Vec<String> = attention.iter().take(preview_limit).cloned().collect();
+        if attention.len() > preview_limit {
+            preview.push(format!("... and {} more", attention.len() - preview_limit));
+        }
+        println!(
+            "{} {} keys need attention: {}",
+            style("⚠").yellow().bold(),
+            style(attention.len()).yellow(),
+            style(preview.join(", ")).yellow()
+        );
+    }
+
     Ok(())
 }
 
@@ -335,10 +360,57 @@ pub fn cmd_get(name: Option<String>, raw: bool, copy: bool) -> Result<()> {
         }
     }
 
+    if !raw {
+        match view.entry.status() {
+            KeyStatus::Expired => {
+                if let Some(expires_at) = view.entry.expires_at {
+                    if !view.entry.apply_url.is_empty() {
+                        println!(
+                            "{} This key expired on {}. Renew at: {}",
+                            style("⚠").yellow().bold(),
+                            style(expires_at.format("%Y-%m-%d").to_string()).red(),
+                            style(&view.entry.apply_url).underlined()
+                        );
+                    } else {
+                        println!(
+                            "{} This key expired on {}.",
+                            style("⚠").yellow().bold(),
+                            style(expires_at.format("%Y-%m-%d").to_string()).red()
+                        );
+                    }
+                } else {
+                    println!("{} This key is expired.", style("⚠").yellow().bold());
+                }
+            }
+            KeyStatus::ExpiringSoon => {
+                if let Some(expires_at) = view.entry.expires_at {
+                    let days = (expires_at - Utc::now()).num_days().max(0);
+                    if !view.entry.apply_url.is_empty() {
+                        println!(
+                            "{} This key expires in {} days ({}). Renew at: {}",
+                            style("⚠").yellow().bold(),
+                            style(days).yellow(),
+                            style(expires_at.format("%Y-%m-%d").to_string()).dim(),
+                            style(&view.entry.apply_url).underlined()
+                        );
+                    } else {
+                        println!(
+                            "{} This key expires in {} days ({}).",
+                            style("⚠").yellow().bold(),
+                            style(days).yellow(),
+                            style(expires_at.format("%Y-%m-%d").to_string()).dim(),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     Ok(())
 }
 
-pub fn cmd_remove(name: Option<String>, force: bool) -> Result<()> {
+pub fn cmd_remove(name: Option<String>, force: bool, purge: bool) -> Result<()> {
     let service = SecretService::new(open_db()?);
     let name = match name {
         Some(n) => {
@@ -351,8 +423,16 @@ pub fn cmd_remove(name: Option<String>, force: bool) -> Result<()> {
     };
 
     if !force {
+        let prompt = if purge {
+            format!(
+                "Permanently delete secret '{}'? This cannot be undone.",
+                name
+            )
+        } else {
+            format!("Deactivate secret '{}{}'", name, '?')
+        };
         let confirmed = Confirm::new()
-            .with_prompt(format!("Remove secret '{}'?", name))
+            .with_prompt(prompt)
             .default(false)
             .interact()?;
         if !confirmed {
@@ -361,8 +441,47 @@ pub fn cmd_remove(name: Option<String>, force: bool) -> Result<()> {
         }
     }
 
-    service.remove_secret(&name)?;
-    println!("{} Secret '{}' removed", style("✓").green().bold(), name);
+    if purge {
+        service.remove_secret(&name)?;
+        println!(
+            "{} Secret '{}' permanently deleted",
+            style("✓").green().bold(),
+            name
+        );
+    } else {
+        service.update_secret(
+            &name,
+            SecretUpdate {
+                value: None,
+                provider: None,
+                account_name: None,
+                org_name: None,
+                description: None,
+                source: None,
+                environment: None,
+                permission_profile: None,
+                scopes: None,
+                projects: None,
+                apply_url: None,
+                expires_at: None,
+                active: Some(false),
+                verify: false,
+            },
+        )?;
+        println!(
+            "{} Secret '{}' deactivated",
+            style("✓").green().bold(),
+            name
+        );
+        println!(
+            "  Restore with: {}",
+            style(format!("kf update {} --active true", name)).cyan()
+        );
+        println!(
+            "  Permanently delete with: {}",
+            style(format!("kf remove {} --purge", name)).cyan()
+        );
+    }
 
     Ok(())
 }
@@ -447,23 +566,50 @@ pub fn cmd_update(args: UpdateArgs) -> Result<()> {
     Ok(())
 }
 
-pub fn cmd_run(project: Option<String>, all: bool, command: Vec<String>) -> Result<()> {
+pub fn cmd_run(
+    project: Option<String>,
+    all: bool,
+    dry_run: bool,
+    command: Vec<String>,
+) -> Result<()> {
     if command.is_empty() {
         bail!("No command specified");
     }
 
     let service = SecretService::new(open_db()?);
-    let detected = detect_project_name();
-    let resolution = service.resolve_run_env_pairs(project, all, detected.clone())?;
+    let detected = if all { None } else { detect_project_name() };
+    let was_auto_detected = project.is_none() && detected.is_some();
+    let resolution = service.resolve_run_env_pairs(project, all, detected)?;
     let project = resolution.project;
     let env_pairs = resolution.env_pairs;
-    if let Some(name) = project.as_ref().filter(|_| !all).or(detected.as_ref()) {
-        eprintln!(
-            "  {} injecting secrets for project: {} (auto-detected)",
-            style("▸").dim(),
-            style(name).cyan()
-        );
-        eprintln!("  {} use --all to inject all secrets", style("ℹ").blue());
+    if !all {
+        if let Some(name) = project.as_ref() {
+            let source = if was_auto_detected {
+                " (auto-detected)"
+            } else {
+                ""
+            };
+            eprintln!(
+                "  {} injecting secrets for project: {}{}",
+                style("▸").dim(),
+                style(name).cyan(),
+                source
+            );
+            eprintln!("  {} use --all to inject all secrets", style("ℹ").blue());
+        }
+    }
+
+    if dry_run {
+        let label = if env_pairs.len() == 1 {
+            "environment variable"
+        } else {
+            "environment variables"
+        };
+        eprintln!("  Would inject {} {}:", env_pairs.len(), label);
+        for (env_var, _) in &env_pairs {
+            eprintln!("    {}", style(env_var).yellow());
+        }
+        return Ok(());
     }
 
     let mut cmd = std::process::Command::new(&command[0]);
@@ -484,6 +630,7 @@ pub fn cmd_import(
     project: Option<String>,
     source: Option<String>,
     on_conflict: &str,
+    yes: bool,
 ) -> Result<()> {
     let path = Path::new(file);
     if !path.exists() {
@@ -492,6 +639,57 @@ pub fn cmd_import(
 
     if !["skip", "overwrite", "rename"].contains(&on_conflict) {
         bail!("Invalid --on-conflict value. Use: skip, overwrite, rename");
+    }
+
+    if path.is_dir() && !yes && std::io::stdout().is_terminal() {
+        let service_preview = SecretService::new(open_db()?);
+        let candidates = match service_preview.scan_path(path, false, true, false) {
+            Ok(candidates) => candidates,
+            Err(err) if err.to_string().starts_with("No .env files found") => {
+                println!(
+                    "{}",
+                    style("No importable .env files found in directory.").dim()
+                );
+                return Ok(());
+            }
+            Err(err) => return Err(err),
+        };
+
+        if candidates.is_empty() {
+            println!(
+                "{}",
+                style("No importable .env files found in directory.").dim()
+            );
+            return Ok(());
+        }
+
+        println!(
+            "{} Found {} candidate keys in {}:\n",
+            style("▸").cyan().bold(),
+            candidates.len(),
+            style(file).cyan()
+        );
+        for candidate in candidates.iter().take(20) {
+            println!(
+                "  {} {}  provider: {}  file: {}",
+                style("•").dim(),
+                style(&candidate.env_var).yellow(),
+                style(&candidate.provider).cyan(),
+                candidate.file.display()
+            );
+        }
+        if candidates.len() > 20 {
+            println!("  ... and {} more", candidates.len() - 20);
+        }
+        println!();
+        if !Confirm::new()
+            .with_prompt("Import these keys?")
+            .default(true)
+            .interact()?
+        {
+            println!("Cancelled.");
+            return Ok(());
+        }
     }
 
     let service = SecretService::new(open_db()?);
@@ -517,9 +715,13 @@ pub fn cmd_import(
     Ok(())
 }
 
-pub fn cmd_export(project: Option<String>, output: Option<String>) -> Result<()> {
+pub fn cmd_export(
+    project: Option<String>,
+    environment: Option<String>,
+    output: Option<String>,
+) -> Result<()> {
     let service = SecretService::new(open_db()?);
-    let (entries, content) = service.export_project_env(project)?;
+    let (entries, content) = service.export_project_env(project, environment)?;
 
     match output {
         Some(path) => {
@@ -539,12 +741,37 @@ pub fn cmd_export(project: Option<String>, output: Option<String>) -> Result<()>
     Ok(())
 }
 
-pub fn cmd_health() -> Result<()> {
+pub fn cmd_health(verbose: bool) -> Result<()> {
     let service = SecretService::new(open_db()?);
     let health = service.health_view()?;
+    let detail_limit = if verbose { usize::MAX } else { 10 };
+    let has_many_issues = !verbose
+        && (health.expired.len() > 10
+            || health.expiring.len() > 10
+            || health.duplicates.len() > 10
+            || health.unused.len() > 10
+            || health.metadata_gaps.len() > 10
+            || health.inactive.len() > 10);
 
     println!("{}", style("KeyFlow Health Report").bold().cyan());
     println!("{}", style("═".repeat(50)).dim());
+
+    if has_many_issues {
+        println!("\n{} Issue counts:", style("ℹ").blue().bold());
+        println!(
+            "  {} expired, {} expiring, {} duplicates, {} unused, {} metadata gaps, {} inactive",
+            style(health.expired.len()).red(),
+            style(health.expiring.len()).yellow(),
+            style(health.duplicates.len()).yellow(),
+            style(health.unused.len()).blue(),
+            style(health.metadata_gaps.len()).yellow(),
+            style(health.inactive.len()).dim(),
+        );
+        println!(
+            "  {}",
+            style("Use --verbose to show all entries in each section.").dim()
+        );
+    }
 
     if !health.expired.is_empty() {
         println!(
@@ -552,7 +779,7 @@ pub fn cmd_health() -> Result<()> {
             style("✗").red().bold(),
             health.expired.len()
         );
-        for e in &health.expired {
+        for e in health.expired.iter().take(detail_limit) {
             println!(
                 "  {} {} (expired {})",
                 style("•").red(),
@@ -565,6 +792,16 @@ pub fn cmd_health() -> Result<()> {
                 println!("    Renew at: {}", style(&e.apply_url).underlined());
             }
         }
+        if !verbose && health.expired.len() > detail_limit {
+            println!(
+                "  {}",
+                style(format!(
+                    "... and {} more",
+                    health.expired.len() - detail_limit
+                ))
+                .dim()
+            );
+        }
     }
 
     if !health.expiring.is_empty() {
@@ -573,10 +810,10 @@ pub fn cmd_health() -> Result<()> {
             style("⚠").yellow().bold(),
             health.expiring.len()
         );
-        for e in &health.expiring {
+        for e in health.expiring.iter().take(detail_limit) {
             let days_left = e
                 .expires_at
-                .map(|d| (d - Utc::now()).num_days())
+                .map(|d| (d - Utc::now()).num_days().max(0))
                 .unwrap_or(0);
             println!(
                 "  {} {} ({} days left)",
@@ -588,6 +825,16 @@ pub fn cmd_health() -> Result<()> {
                 println!("    Renew at: {}", style(&e.apply_url).underlined());
             }
         }
+        if !verbose && health.expiring.len() > detail_limit {
+            println!(
+                "  {}",
+                style(format!(
+                    "... and {} more",
+                    health.expiring.len() - detail_limit
+                ))
+                .dim()
+            );
+        }
     }
 
     if !health.duplicates.is_empty() {
@@ -596,7 +843,7 @@ pub fn cmd_health() -> Result<()> {
             style("⚠").yellow().bold(),
             health.duplicates.len()
         );
-        for group in &health.duplicates {
+        for group in health.duplicates.iter().take(detail_limit) {
             println!(
                 "  {} {} → {}",
                 style("•").yellow(),
@@ -607,6 +854,16 @@ pub fn cmd_health() -> Result<()> {
                     .map(|n| style(n).cyan().to_string())
                     .collect::<Vec<_>>()
                     .join(", ")
+            );
+        }
+        if !verbose && health.duplicates.len() > detail_limit {
+            println!(
+                "  {}",
+                style(format!(
+                    "... and {} more",
+                    health.duplicates.len() - detail_limit
+                ))
+                .dim()
             );
         }
     }
@@ -674,12 +931,22 @@ pub fn cmd_health() -> Result<()> {
             style("ℹ").blue().bold(),
             health.unused.len()
         );
-        for (name, days) in &health.unused {
+        for (name, days) in health.unused.iter().take(detail_limit) {
             println!(
                 "  {} {} ({} days since last use)",
                 style("•").dim(),
                 style(name).cyan(),
                 days
+            );
+        }
+        if !verbose && health.unused.len() > detail_limit {
+            println!(
+                "  {}",
+                style(format!(
+                    "... and {} more",
+                    health.unused.len() - detail_limit
+                ))
+                .dim()
             );
         }
     }
@@ -690,12 +957,22 @@ pub fn cmd_health() -> Result<()> {
             style("!").yellow().bold(),
             health.metadata_gaps.len()
         );
-        for (name, gaps) in &health.metadata_gaps {
+        for (name, gaps) in health.metadata_gaps.iter().take(detail_limit) {
             println!(
                 "  {} {} ({})",
                 style("•").yellow(),
                 style(name).cyan(),
                 gaps.join(", ")
+            );
+        }
+        if !verbose && health.metadata_gaps.len() > detail_limit {
+            println!(
+                "  {}",
+                style(format!(
+                    "... and {} more",
+                    health.metadata_gaps.len() - detail_limit
+                ))
+                .dim()
             );
         }
     }
@@ -706,8 +983,18 @@ pub fn cmd_health() -> Result<()> {
             style("⊘").dim(),
             health.inactive.len()
         );
-        for name in &health.inactive {
+        for name in health.inactive.iter().take(detail_limit) {
             println!("  {} {}", style("•").dim(), style(name).dim());
+        }
+        if !verbose && health.inactive.len() > detail_limit {
+            println!(
+                "  {}",
+                style(format!(
+                    "... and {} more",
+                    health.inactive.len() - detail_limit
+                ))
+                .dim()
+            );
         }
     }
 
@@ -762,7 +1049,11 @@ pub fn cmd_verify(name: Option<String>, all: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn cmd_search(query: Option<String>) -> Result<()> {
+pub fn cmd_search(query: Option<String>, limit: usize, offset: usize) -> Result<()> {
+    if limit == 0 {
+        bail!("--limit must be greater than 0");
+    }
+
     let query = match query {
         Some(q) => q,
         None => Input::new().with_prompt("Search").interact_text()?,
@@ -775,13 +1066,24 @@ pub fn cmd_search(query: Option<String>) -> Result<()> {
         return Ok(());
     }
 
+    if offset >= entries.len() {
+        println!(
+            "{} No secrets in this page. Total matching secrets: {}",
+            style("ℹ").blue(),
+            entries.len()
+        );
+        return Ok(());
+    }
+
+    let page_entries: Vec<_> = entries.iter().skip(offset).take(limit).collect();
+
     println!(
         "Found {} secrets matching '{}':\n",
         entries.len(),
         style(&query).yellow()
     );
 
-    for entry in &entries {
+    for entry in &page_entries {
         let status = entry.status();
         let status_str = match status {
             KeyStatus::Active => style(status.to_string()).green(),
@@ -801,6 +1103,31 @@ pub fn cmd_search(query: Option<String>) -> Result<()> {
             &entry.provider,
             status_str,
         );
+        match status {
+            KeyStatus::Expired => {
+                if let Some(expires_at) = entry.expires_at {
+                    println!(
+                        "    {} Expired on {}",
+                        style("⚠").yellow().bold(),
+                        style(expires_at.format("%Y-%m-%d").to_string()).red()
+                    );
+                } else {
+                    println!("    {} Expired", style("⚠").yellow().bold());
+                }
+            }
+            KeyStatus::ExpiringSoon => {
+                if let Some(expires_at) = entry.expires_at {
+                    let days = (expires_at - Utc::now()).num_days().max(0);
+                    println!(
+                        "    {} Expiring in {} days ({})",
+                        style("⚠").yellow().bold(),
+                        style(days).yellow(),
+                        style(expires_at.format("%Y-%m-%d").to_string()).dim()
+                    );
+                }
+            }
+            _ => {}
+        }
         if !entry.account_name.is_empty() {
             println!("    account: {}", style(&entry.account_name).blue());
         }
@@ -816,11 +1143,47 @@ pub fn cmd_search(query: Option<String>) -> Result<()> {
                 style(verified.format("%Y-%m-%d").to_string()).green()
             );
         }
+        if let Some(used) = entry.last_used_at {
+            let days = (Utc::now() - used).num_days();
+            if days > 30 {
+                println!(
+                    "    last used: {} ({} days ago)",
+                    style(used.format("%Y-%m-%d").to_string()).dim(),
+                    style(days).yellow()
+                );
+                println!(
+                    "    {}",
+                    style(format!("unused for {} days", days)).yellow()
+                );
+            } else {
+                println!(
+                    "    last used: {} ({} days ago)",
+                    style(used.format("%Y-%m-%d").to_string()).dim(),
+                    days
+                );
+            }
+        } else {
+            let days = (Utc::now() - entry.created_at).num_days().max(0);
+            println!("    last used: {}", style("never").dim());
+            println!(
+                "    {}",
+                style(format!("unused for {} days", days)).yellow()
+            );
+        }
         if !entry.projects.is_empty() {
             println!("    projects: {}", entry.projects.join(", "));
         }
         println!();
     }
+
+    let shown_end = offset + page_entries.len();
+    println!(
+        "{} Showing {}-{} of {} secrets",
+        style("ℹ").blue(),
+        offset + 1,
+        shown_end,
+        entries.len()
+    );
 
     Ok(())
 }
@@ -829,6 +1192,10 @@ pub fn cmd_scan(args: ScanArgs) -> Result<()> {
     let scan_path = Path::new(&args.path);
     if !scan_path.exists() {
         bail!("Path not found: {}", args.path);
+    }
+
+    if args.limit == 0 {
+        bail!("--limit must be greater than 0");
     }
 
     if !["skip", "overwrite", "rename"].contains(&args.on_conflict.as_str()) {
@@ -886,7 +1253,8 @@ pub fn cmd_scan(args: ScanArgs) -> Result<()> {
         style("▸").cyan().bold(),
         candidates.len()
     );
-    for candidate in &candidates {
+    let preview_candidates: Vec<_> = candidates.iter().take(args.limit).collect();
+    for candidate in &preview_candidates {
         println!(
             "  {} {}  provider: {}  file: {}{}",
             style("•").dim(),
@@ -898,6 +1266,16 @@ pub fn cmd_scan(args: ScanArgs) -> Result<()> {
                 .as_ref()
                 .map(|project| format!("  project: {}", project))
                 .unwrap_or_default()
+        );
+    }
+    if candidates.len() > preview_candidates.len() {
+        println!(
+            "  {}",
+            style(format!(
+                "... and {} more candidates",
+                candidates.len() - preview_candidates.len()
+            ))
+            .dim()
         );
     }
 

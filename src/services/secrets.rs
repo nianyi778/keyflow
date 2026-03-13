@@ -643,9 +643,11 @@ impl<'a> SecretService<'a> {
     pub fn export_project_env(
         &self,
         project: Option<String>,
+        environment: Option<String>,
     ) -> Result<(Vec<SecretEntry>, String)> {
         let entries = self.db.list_secrets(&ListFilter {
             project,
+            environment,
             ..Default::default()
         })?;
 

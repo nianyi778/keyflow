@@ -164,7 +164,7 @@ fn import_export_and_run_resolution_follow_project_scope() {
     assert_eq!(stats.imported, 2);
 
     let (entries, content) = service
-        .export_project_env(Some("demo-app".to_string()))
+        .export_project_env(Some("demo-app".to_string()), None)
         .unwrap();
     assert_eq!(entries.len(), 2);
     assert!(content.contains("OPENAI_API_KEY=sk-demo"));
