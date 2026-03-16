@@ -181,7 +181,7 @@ impl<'a> VaultService<'a> {
                     "keys": entries
                         .iter()
                         .take(100)
-                        .map(|entry| models::secret_to_json(entry))
+                        .map(models::secret_to_json)
                         .collect::<Vec<_>>(),
                     "health": provider_health_snapshot(provider, &entries),
                 });

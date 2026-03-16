@@ -272,7 +272,7 @@ fn cmd_sync_init(endpoint: String) -> Result<()> {
 
     let mut response = ureq::post(&format!("{}/api/register", endpoint))
         .header("Content-Type", "application/json")
-        .send_json(&serde_json::json!({
+        .send_json(serde_json::json!({
             "password_hash": hash
         }))
         .map_err(|e| anyhow::anyhow!("Failed to initialize sync registration: {e}"))?;
@@ -365,7 +365,7 @@ fn cmd_sync_push() -> Result<()> {
     let mut response = ureq::post(&format!("{}/api/push", config.endpoint))
         .header("Content-Type", "application/json")
         .header("Authorization", &format!("Bearer {}", config.token))
-        .send_json(&serde_json::json!({
+        .send_json(serde_json::json!({
             "entries": payload_entries,
             "since_seq": config.last_seq,
         }))
@@ -411,7 +411,7 @@ fn cmd_sync_pull() -> Result<()> {
     let mut response = ureq::post(&format!("{}/api/pull", config.endpoint))
         .header("Content-Type", "application/json")
         .header("Authorization", &format!("Bearer {}", config.token))
-        .send_json(&serde_json::json!({
+        .send_json(serde_json::json!({
             "since_seq": config.last_seq,
         }))
         .map_err(|e| anyhow::anyhow!("Failed to pull sync changes: {e}"))?;
