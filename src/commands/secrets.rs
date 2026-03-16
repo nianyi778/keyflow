@@ -186,6 +186,8 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
         style(&entry.env_var).yellow()
     );
 
+    crate::commands::sync::try_background_push();
+
     Ok(())
 }
 

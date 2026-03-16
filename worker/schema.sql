@@ -1,5 +1,9 @@
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
+  google_id TEXT UNIQUE,
+  email TEXT,
+  name TEXT,
+  avatar_url TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

@@ -6,8 +6,11 @@ use dialoguer::{Confirm, Password};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
+use std::time::Duration;
 
 use crate::cli::SyncCommands;
 use crate::commands::auth::{get_passphrase, open_db};
@@ -85,18 +88,6 @@ fn save_sync_config(config: &SyncConfig) -> Result<()> {
         )
     })?;
     Ok(())
-}
-
-fn password_hash(passphrase: &str) -> String {
-    let mut hash = [0u8; 32];
-    argon2::Argon2::default()
-        .hash_password_into(
-            passphrase.as_bytes(),
-            b"keyflow-sync-auth0000000000000000",
-            &mut hash,
-        )
-        .expect("hash failed");
-    base64::engine::general_purpose::STANDARD.encode(hash)
 }
 
 fn encrypt_entry(entry: &SyncEntry, crypto: &Crypto) -> Result<String> {
@@ -250,16 +241,106 @@ pub fn cmd_sync(sub: SyncCommands) -> Result<()> {
 fn cmd_sync_init(endpoint: String) -> Result<()> {
     let endpoint = endpoint.trim_end_matches('/').to_string();
 
-    // Try to use vault passphrase (same as local vault)
+    let mut start_response = ureq::post(&format!("{}/api/device/start", endpoint))
+        .header("Content-Type", "application/json")
+        .send_json(serde_json::json!({}))
+        .map_err(|e| anyhow::anyhow!("Failed to start device authorization: {e}"))?;
+    let start_payload: serde_json::Value = start_response
+        .body_mut()
+        .read_json()
+        .context("Failed to parse device start response")?;
+
+    let device_code = start_payload
+        .get("device_code")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string())
+        .context("Sync server response missing device_code")?;
+    let verification_url = start_payload
+        .get("verification_url")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string())
+        .context("Sync server response missing verification_url")?;
+
+    println!("Opening browser for Google sign-in...");
+    println!(
+        "If browser doesn't open, visit: {}",
+        style(&verification_url).cyan()
+    );
+    if let Err(err) = open::that(&verification_url) {
+        println!(
+            "{} Could not open browser automatically: {err}",
+            style("!").yellow()
+        );
+    }
+
+    print!("Waiting for device approval");
+    io::stdout().flush()?;
+
+    let mut approved_user_id: Option<String> = None;
+    let mut approved_token: Option<String> = None;
+    for attempt in 0..40 {
+        if attempt > 0 {
+            thread::sleep(Duration::from_secs(3));
+        }
+
+        let poll_result = ureq::post(&format!("{}/api/device/poll", endpoint))
+            .header("Content-Type", "application/json")
+            .send_json(serde_json::json!({
+                "device_code": &device_code
+            }));
+
+        let mut poll_response = match poll_result {
+            Ok(response) => response,
+            Err(err) => {
+                println!();
+                bail!("Device authorization failed while polling: {err}");
+            }
+        };
+
+        let poll_payload: serde_json::Value = poll_response
+            .body_mut()
+            .read_json()
+            .context("Failed to parse device poll response")?;
+        let status = poll_payload
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+
+        if status == "pending" {
+            print!(".");
+            io::stdout().flush()?;
+            continue;
+        }
+
+        if status == "approved" {
+            approved_user_id = poll_payload
+                .get("user_id")
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string());
+            approved_token = poll_payload
+                .get("token")
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string());
+            break;
+        }
+
+        println!();
+        bail!("Device authorization failed: unexpected poll status '{status}'");
+    }
+
+    println!();
+
+    let user_id = approved_user_id.context(
+        "Timed out waiting for device approval (120s). Run `kf sync init` and approve in browser.",
+    )?;
+    let token = approved_token.context("Device approval succeeded but token was missing")?;
+
     let passphrase = match get_passphrase() {
         Ok(pass) => pass,
-        Err(_) => {
-            // Vault not initialized or locked - prompt for passphrase
-            Password::new()
-                .with_prompt("Enter vault passphrase (will also be used for sync):")
-                .with_confirmation("Confirm passphrase", "Passphrases don't match")
-                .interact()?
-        }
+        Err(_) => Password::new()
+            .with_prompt("Enter vault passphrase (will also be used for sync):")
+            .with_confirmation("Confirm passphrase", "Passphrases don't match")
+            .interact()?,
     };
 
     if passphrase.is_empty() {
@@ -268,29 +349,6 @@ fn cmd_sync_init(endpoint: String) -> Result<()> {
 
     let sync_salt_bytes = Crypto::generate_salt();
     let sync_salt = base64::engine::general_purpose::STANDARD.encode(sync_salt_bytes);
-    let hash = password_hash(&passphrase);
-
-    let mut response = ureq::post(&format!("{}/api/register", endpoint))
-        .header("Content-Type", "application/json")
-        .send_json(serde_json::json!({
-            "password_hash": hash
-        }))
-        .map_err(|e| anyhow::anyhow!("Failed to initialize sync registration: {e}"))?;
-    let payload: serde_json::Value = response
-        .body_mut()
-        .read_json()
-        .context("Failed to parse sync registration response")?;
-
-    let user_id = payload
-        .get("user_id")
-        .and_then(|v| v.as_str())
-        .map(|v| v.to_string())
-        .context("Sync server response missing user_id")?;
-    let token = payload
-        .get("token")
-        .and_then(|v| v.as_str())
-        .map(|v| v.to_string())
-        .context("Sync server response missing token")?;
 
     let config = SyncConfig {
         endpoint,
@@ -307,6 +365,24 @@ fn cmd_sync_init(endpoint: String) -> Result<()> {
         style("✓").green().bold()
     );
     Ok(())
+}
+
+pub fn try_background_push() {
+    let config_path = match sync_config_path() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    if !config_path.exists() {
+        return;
+    }
+    thread::spawn(|| {
+        if let Err(e) = cmd_sync_push() {
+            eprintln!(
+                "{} Background sync failed: {e}",
+                console::style("!").yellow()
+            );
+        }
+    });
 }
 
 fn cmd_sync_push() -> Result<()> {

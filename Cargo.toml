@@ -23,6 +23,7 @@ base64 = "0.22"
 dirs = "5"
 anyhow = "1"
 ureq = { version = "3", features = ["json"] }
+open = "5"
 
 walkdir = "2"
 

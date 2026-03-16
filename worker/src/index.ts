@@ -5,6 +5,8 @@ type Bindings = {
   DB: D1Database;
   KV: KVNamespace;
   JWT_SECRET: string; // Set via wrangler secret put
+  GOOGLE_CLIENT_ID: string;
+  GOOGLE_CLIENT_SECRET: string;
 };
 
 type JWTPayload = {
@@ -24,8 +26,18 @@ type PushEntry = {
   is_deleted: number;
 };
 
+type DeviceSession = {
+  user_code?: string;
+  user_id?: string;
+  status: "pending" | "approved";
+  created_at?: string;
+  approved_at?: string;
+};
+
 const TOKEN_LIFETIME_SECONDS = 365 * 24 * 60 * 60;
 const RATE_LIMIT_PER_MINUTE = 100;
+const DEVICE_TTL_SECONDS = 600;
+const GOOGLE_REDIRECT_URI = "https://keyflow.divinations.top/auth/google/callback";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -204,11 +216,57 @@ toast.style.transform='translateX(-50%) translateY(20px)';
 <footer><p>KeyFlow v0.5.0 -- MIT License -- <a href="https://github.com/nianyi778/keyflow" style="color:var(--dm)">github.com/nianyi778/keyflow</a></p></footer>
 </div></body></html>`;
 
+const LOGIN_HTML = (userCode: string | null, googleAuthUrl: string) => `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>KeyFlow Login</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0F172A;--sf:#1E293B;--bd:#334155;--ac:#22C55E;--cy:#22d3ee;--mt:#94A3B8;--tx:#F8FAFC;--mn:'JetBrains Mono',monospace;--sn:'IBM Plex Sans',sans-serif}
+body{min-height:100vh;display:grid;place-items:center;background:radial-gradient(1200px 600px at 50% -10%,rgba(34,197,94,.08),transparent 60%),var(--bg);color:var(--tx);font-family:var(--sn);padding:24px}
+.card{width:min(460px,100%);background:var(--sf);border:1px solid var(--bd);border-radius:14px;padding:32px 28px;box-shadow:0 24px 60px rgba(2,6,23,.45)}
+.logo{font-family:var(--mn);font-weight:700;color:var(--ac);font-size:18px;letter-spacing:-.5px}
+.logo span{color:var(--mt)}
+h1{font-family:var(--mn);font-size:26px;letter-spacing:-.5px;margin-top:18px;margin-bottom:10px}
+p{color:var(--mt);font-size:14px;line-height:1.7}
+.code{margin-top:8px;font-family:var(--mn);font-size:13px;color:var(--cy)}
+.code strong{color:var(--tx)}
+.btn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;margin-top:24px;padding:12px 16px;border-radius:10px;border:1px solid var(--bd);background:#111827;color:var(--tx);font-family:var(--mn);font-size:13px;font-weight:600;text-decoration:none;transition:all .2s}
+.btn:hover{border-color:var(--ac);transform:translateY(-1px)}
+.hint{margin-top:14px;font-family:var(--mn);font-size:12px;color:var(--mt)}
+</style></head>
+<body>
+<main class="card">
+<div class="logo">kf<span>low</span></div>
+<h1>Google Sign-In</h1>
+<p>Authenticate your KeyFlow sync account using Google OAuth.</p>
+${
+  userCode
+    ? `<p class="code">Authorizing device: <strong>${escapeHtml(userCode)}</strong></p>`
+    : ""
+}
+<a class="btn" href="${googleAuthUrl}">
+<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="#EA4335" d="M12 10.2v3.9h5.5c-.2 1.2-1.4 3.6-5.5 3.6-3.3 0-6-2.8-6-6.2s2.7-6.2 6-6.2c1.9 0 3.1.8 3.9 1.5l2.7-2.7C17 2.5 14.8 1.5 12 1.5 6.8 1.5 2.6 5.9 2.6 11.3S6.8 21.1 12 21.1c6.9 0 9.5-4.8 9.5-7.3 0-.5 0-.9-.1-1.3H12z"/></svg>
+Continue with Google
+</a>
+<p class="hint">After approval, return to the terminal.</p>
+</main>
+</body></html>`;
+
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
 type AppContext = Context<{ Bindings: Bindings; Variables: Variables }>;
 
-const jsonError = (c: AppContext, status: number, error: string, code: string) => {
+const jsonError = (
+  c: AppContext,
+  status: 400 | 401 | 404 | 429 | 500,
+  error: string,
+  code: string,
+) => {
   return c.json({ error, code }, status);
 };
 
@@ -311,6 +369,40 @@ async function issueToken(userId: string, secret: string): Promise<string> {
   );
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function generateUserCode(length = 8): string {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  let result = "";
+  for (const byte of bytes) {
+    result += alphabet[byte % alphabet.length];
+  }
+  return result;
+}
+
+async function resolveDeviceCode(kv: KVNamespace, providedCode: string): Promise<string | null> {
+  const code = providedCode.trim();
+  if (!code) {
+    return null;
+  }
+
+  const direct = await kv.get(`device:${code}`);
+  if (direct) {
+    return code;
+  }
+
+  return kv.get(`device_user:${code}`);
+}
+
 function isServerNewer(serverUpdatedAt: string, clientUpdatedAt: string): boolean {
   const serverTs = Date.parse(serverUpdatedAt);
   const clientTs = Date.parse(clientUpdatedAt);
@@ -333,9 +425,154 @@ app.use(
 
 app.get("/", (c) => c.html(LANDING_HTML));
 
+app.get("/login", (c) => {
+  const rawCode = (c.req.query("code") ?? "").trim();
+  const code = rawCode === "" ? null : rawCode.slice(0, 64);
+  const googleAuthUrl = code
+    ? `/auth/google/start?device_code=${encodeURIComponent(code)}`
+    : "/auth/google/start";
+  return c.html(LOGIN_HTML(code, googleAuthUrl));
+});
+
+app.get("/auth/google/start", async (c) => {
+  const providedCode = (c.req.query("device_code") ?? "").trim();
+  let state = "";
+  if (providedCode) {
+    state = (await resolveDeviceCode(c.env.KV, providedCode)) ?? providedCode;
+  }
+
+  const params = new URLSearchParams({
+    client_id: c.env.GOOGLE_CLIENT_ID,
+    redirect_uri: GOOGLE_REDIRECT_URI,
+    response_type: "code",
+    scope: "openid email profile",
+    access_type: "online",
+  });
+
+  if (state) {
+    params.set("state", state);
+  }
+
+  return c.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`, 302);
+});
+
+app.get("/auth/google/callback", async (c) => {
+  const oauthCode = (c.req.query("code") ?? "").trim();
+  const state = (c.req.query("state") ?? "").trim();
+
+  if (!oauthCode) {
+    return c.html("<h1>OAuth callback missing code</h1>", 400);
+  }
+
+  const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({
+      code: oauthCode,
+      client_id: c.env.GOOGLE_CLIENT_ID,
+      client_secret: c.env.GOOGLE_CLIENT_SECRET,
+      redirect_uri: GOOGLE_REDIRECT_URI,
+      grant_type: "authorization_code",
+    }),
+  });
+
+  if (!tokenResponse.ok) {
+    const detail = await tokenResponse.text();
+    console.error("Google token exchange failed", detail);
+    return c.html("<h1>Google sign-in failed</h1>", 502);
+  }
+
+  const tokenPayload = (await tokenResponse.json()) as { access_token?: string };
+  if (typeof tokenPayload.access_token !== "string" || tokenPayload.access_token.trim() === "") {
+    return c.html("<h1>Google sign-in failed</h1>", 502);
+  }
+
+  const profileResponse = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+    headers: {
+      Authorization: `Bearer ${tokenPayload.access_token}`,
+    },
+  });
+
+  if (!profileResponse.ok) {
+    const detail = await profileResponse.text();
+    console.error("Google user info fetch failed", detail);
+    return c.html("<h1>Google sign-in failed</h1>", 502);
+  }
+
+  const profile = (await profileResponse.json()) as {
+    id?: string;
+    email?: string;
+    name?: string;
+    picture?: string;
+  };
+
+  if (typeof profile.id !== "string" || profile.id.trim() === "") {
+    return c.html("<h1>Google sign-in failed</h1>", 502);
+  }
+
+  const googleId = profile.id;
+  const email = typeof profile.email === "string" ? profile.email : null;
+  const name = typeof profile.name === "string" ? profile.name : null;
+  const avatarUrl = typeof profile.picture === "string" ? profile.picture : null;
+
+  const existingUser = await c.env.DB.prepare("SELECT id FROM users WHERE google_id = ?")
+    .bind(googleId)
+    .first<{ id: string }>();
+
+  let userId = existingUser?.id;
+  if (!userId) {
+    userId = crypto.randomUUID();
+    await c.env.DB.prepare(
+      "INSERT INTO users (id, google_id, email, name, avatar_url) VALUES (?, ?, ?, ?, ?)",
+    )
+      .bind(userId, googleId, email, name, avatarUrl)
+      .run();
+  } else {
+    await c.env.DB.prepare("UPDATE users SET email = ?, name = ?, avatar_url = ? WHERE id = ?")
+      .bind(email, name, avatarUrl, userId)
+      .run();
+  }
+
+  if (state) {
+    const deviceKey = `device:${state}`;
+    const existingStateRaw = await c.env.KV.get(deviceKey);
+    const existingState: Partial<DeviceSession> = existingStateRaw
+      ? (() => {
+          try {
+            return JSON.parse(existingStateRaw) as Partial<DeviceSession>;
+          } catch {
+            return {};
+          }
+        })()
+      : {};
+
+    const approvedState: DeviceSession = {
+      user_code: typeof existingState.user_code === "string" ? existingState.user_code : undefined,
+      created_at: typeof existingState.created_at === "string" ? existingState.created_at : undefined,
+      user_id: userId,
+      status: "approved",
+      approved_at: new Date().toISOString(),
+    };
+
+    await c.env.KV.put(deviceKey, JSON.stringify(approvedState), {
+      expirationTtl: DEVICE_TTL_SECONDS,
+    });
+  }
+
+  const token = await issueToken(userId, c.env.JWT_SECRET);
+  c.header(
+    "Set-Cookie",
+    `kf_token=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${TOKEN_LIFETIME_SECONDS}`,
+  );
+
+  return c.html(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>Device Authorized</title><style>:root{--bg:#0F172A;--sf:#1E293B;--bd:#334155;--ac:#22C55E;--tx:#F8FAFC;--mt:#94A3B8;--mn:'JetBrains Mono',monospace}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);font-family:var(--mn);color:var(--tx);padding:24px}.card{background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:28px;max-width:500px;text-align:center}.ok{color:var(--ac);font-size:18px;margin-bottom:10px}.sub{color:var(--mt);font-size:13px;line-height:1.8}</style></head><body><div class="card"><div class="ok">Device authorized.</div><div class="sub">You can close this tab and return to the terminal.</div></div></body></html>`);
+});
+
 app.use("/api/*", async (c, next) => {
   const path = c.req.path;
-  if (path === "/api/register" || path === "/api/login") {
+  if (path === "/api/device/start" || path === "/api/device/poll") {
     await next();
     return;
   }
@@ -368,40 +605,68 @@ app.use("/api/*", async (c, next) => {
   await next();
 });
 
-app.post("/api/register", async (c) => {
-  const body = await c.req.json<{ password_hash: string }>().catch(() => null);
-  if (!body || typeof body.password_hash !== "string" || body.password_hash.trim() === "") {
-    return jsonError(c, 400, "Invalid request body", "BAD_REQUEST");
-  }
+app.post("/api/device/start", async (c) => {
+  const deviceCode = crypto.randomUUID();
+  const userCode = generateUserCode();
+  const createdAt = new Date().toISOString();
 
-  const userId = crypto.randomUUID();
+  const session: DeviceSession = {
+    user_code: userCode,
+    status: "pending",
+    created_at: createdAt,
+  };
 
-  await c.env.DB.prepare("INSERT INTO users (id) VALUES (?)").bind(userId).run();
-  await c.env.KV.put(`auth:${userId}`, body.password_hash);
+  await c.env.KV.put(`device:${deviceCode}`, JSON.stringify(session), {
+    expirationTtl: DEVICE_TTL_SECONDS,
+  });
+  await c.env.KV.put(`device_user:${userCode}`, deviceCode, {
+    expirationTtl: DEVICE_TTL_SECONDS,
+  });
 
-  const token = await issueToken(userId, c.env.JWT_SECRET);
-  return c.json({ user_id: userId, token });
+  return c.json({
+    device_code: deviceCode,
+    user_code: userCode,
+    verification_url: `https://keyflow.divinations.top/login?code=${encodeURIComponent(userCode)}`,
+    expires_in: DEVICE_TTL_SECONDS,
+  });
 });
 
-app.post("/api/login", async (c) => {
-  const body = await c.req.json<{ user_id: string; password_hash: string }>().catch(() => null);
-  if (
-    !body ||
-    typeof body.user_id !== "string" ||
-    body.user_id.trim() === "" ||
-    typeof body.password_hash !== "string" ||
-    body.password_hash.trim() === ""
-  ) {
+app.post("/api/device/poll", async (c) => {
+  const body = await c.req.json<{ device_code: string }>().catch(() => null);
+  if (!body || typeof body.device_code !== "string" || body.device_code.trim() === "") {
     return jsonError(c, 400, "Invalid request body", "BAD_REQUEST");
   }
 
-  const storedHash = await c.env.KV.get(`auth:${body.user_id}`);
-  if (!storedHash || storedHash !== body.password_hash) {
-    return jsonError(c, 401, "Invalid credentials", "UNAUTHORIZED");
+  const sessionRaw = await c.env.KV.get(`device:${body.device_code}`);
+  if (!sessionRaw) {
+    return jsonError(c, 404, "Device code expired", "DEVICE_CODE_EXPIRED");
   }
 
-  const token = await issueToken(body.user_id, c.env.JWT_SECRET);
-  return c.json({ token });
+  let session: DeviceSession;
+  try {
+    session = JSON.parse(sessionRaw) as DeviceSession;
+  } catch {
+    return jsonError(c, 500, "Corrupted device state", "INTERNAL_ERROR");
+  }
+
+  if (session.status === "pending") {
+    return c.json({ status: "pending" }, 202);
+  }
+
+  if (session.status === "approved") {
+    if (typeof session.user_id !== "string" || session.user_id.trim() === "") {
+      return jsonError(c, 500, "Approved device missing user", "INTERNAL_ERROR");
+    }
+
+    const token = await issueToken(session.user_id, c.env.JWT_SECRET);
+    return c.json({
+      status: "approved",
+      token,
+      user_id: session.user_id,
+    });
+  }
+
+  return jsonError(c, 400, "Invalid device state", "BAD_REQUEST");
 });
 
 app.post("/api/push", async (c) => {

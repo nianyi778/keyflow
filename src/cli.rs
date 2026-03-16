@@ -331,8 +331,8 @@ pub enum Commands {
 pub enum SyncCommands {
     /// Initialize sync with a remote endpoint
     Init {
-        /// Worker endpoint URL (e.g. https://keyflow-sync.xxx.workers.dev)
-        #[arg(long)]
+        /// Worker endpoint URL (default: https://keyflow.divinations.top)
+        #[arg(long, default_value = "https://keyflow.divinations.top")]
         endpoint: String,
     },
 
