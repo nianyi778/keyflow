@@ -110,7 +110,7 @@ Return a practical action plan for this project only."
     } else {
         format!(
             "Review the secret posture for project '{project}'. The required env vars are: {required_vars}. \
-First read vault://project/{project}, then use check_project_readiness for the required vars. \
+First read vault://project/{project}, then use maintain_project_readiness for the required vars. \
 Return a gap analysis and a concrete remediation checklist."
         )
     };

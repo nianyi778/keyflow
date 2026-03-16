@@ -2,59 +2,38 @@ use anyhow::{bail, Result};
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::path::Path;
 
-use crate::commands::helpers::{discover_project_context, infer_required_env_vars};
-use crate::db::Database;
 use crate::models::{self, KeyStatus, ListFilter, SecretEntry};
+use crate::services::secrets::{
+    validate_env_var_name, ProjectKeysResult, SearchFilter, SearchResult, SecretDraft,
+    SecretService,
+};
 
 pub struct VaultService<'a> {
-    db: &'a Database,
+    secrets: &'a SecretService<'a>,
 }
 
 impl<'a> VaultService<'a> {
-    pub fn new(db: &'a Database) -> Self {
-        Self { db }
+    pub fn new(secrets: &'a SecretService<'a>) -> Self {
+        Self { secrets }
     }
 
     pub fn search_keys(&self, request: SearchKeysRequest) -> Result<Value> {
-        let entries = self.db.search_secrets(&request.query)?;
-        let mut filtered = entries
-            .into_iter()
-            .filter(|entry| request.include_inactive || entry.is_active)
-            .filter(|entry| {
-                request
-                    .provider
-                    .as_ref()
-                    .is_none_or(|provider| entry.provider == *provider)
-            })
-            .filter(|entry| {
-                request
-                    .project
-                    .as_ref()
-                    .is_none_or(|project| entry.projects.iter().any(|item| item == project))
-            })
-            .collect::<Vec<_>>();
-        let scored = rank_entries_for_query(filtered.as_mut_slice(), &request.query);
-        let total = filtered.len();
-        let keys = paginate_scored_entries(scored, request.limit, request.offset)
-            .into_iter()
-            .map(scored_entry_to_json)
-            .collect::<Vec<_>>();
-        Ok(json!({
-            "found": !keys.is_empty(),
-            "total": total,
-            "count": keys.len(),
-            "limit": clamp_limit(request.limit),
-            "offset": request.offset.unwrap_or(0),
-            "has_more": request.offset.unwrap_or(0) + keys.len() < total,
-            "keys": keys
-        }))
+        let result = self.secrets.search_ranked(
+            &request.query,
+            &SearchFilter {
+                provider: request.provider,
+                project: request.project,
+                limit: request.limit,
+                offset: request.offset,
+                include_inactive: request.include_inactive,
+            },
+        )?;
+        Ok(search_result_to_json(result))
     }
 
     pub fn list_resources(&self) -> Result<Value> {
-        let entries = self.db.list_secrets(&ListFilter {
+        let entries = self.secrets.list_entries(&ListFilter {
             inactive: true,
             ..Default::default()
         })?;
@@ -189,7 +168,7 @@ impl<'a> VaultService<'a> {
                 if provider.is_empty() {
                     bail!("Invalid resource URI '{uri}': missing provider name");
                 }
-                let entries = self.db.list_secrets(&ListFilter {
+                let entries = self.secrets.list_entries(&ListFilter {
                     provider: Some(provider.to_string()),
                     inactive: true,
                     ..Default::default()
@@ -199,9 +178,10 @@ impl<'a> VaultService<'a> {
                     "total": entries.len(),
                     "active": entries.iter().filter(|entry| entry.is_active).count(),
                     "inactive": entries.iter().filter(|entry| !entry.is_active).count(),
-                    "keys": paginate_entries(entries.clone(), Some(100), Some(0))
+                    "keys": entries
                         .iter()
-                        .map(models::secret_to_json)
+                        .take(100)
+                        .map(|entry| models::secret_to_json(entry))
                         .collect::<Vec<_>>(),
                     "health": provider_health_snapshot(provider, &entries),
                 });
@@ -221,228 +201,134 @@ impl<'a> VaultService<'a> {
     }
 
     pub fn get_key_info(&self, name: String) -> Result<Value> {
-        let entry = self.db.get_secret(&name)?;
+        let entry = self.secrets.get_entry(&name)?;
         Ok(models::secret_to_json(&entry))
     }
 
     pub fn list_providers(&self) -> Result<Value> {
-        let entries = self.db.list_secrets(&ListFilter::default())?;
-        let mut counts = HashMap::<String, usize>::new();
-        for entry in entries {
-            *counts.entry(entry.provider).or_default() += 1;
-        }
-
-        let mut providers = counts
+        let providers = self
+            .secrets
+            .list_providers()?
             .into_iter()
-            .map(|(provider, key_count)| json!({ "provider": provider, "key_count": key_count }))
+            .map(|provider| json!({ "provider": provider.provider, "key_count": provider.key_count }))
             .collect::<Vec<_>>();
-        providers.sort_by(|a, b| a["provider"].as_str().cmp(&b["provider"].as_str()));
 
         Ok(json!({ "providers": providers }))
     }
 
     pub fn list_projects(&self, request: ListProjectsRequest) -> Result<Value> {
-        let entries = self.db.list_secrets(&ListFilter::default())?;
-        let mut projects = HashMap::<String, Vec<String>>::new();
-        for entry in entries {
-            for project in entry.projects {
-                projects
-                    .entry(project)
-                    .or_default()
-                    .push(entry.name.clone());
-            }
-        }
-
-        let mut values = projects
-            .into_iter()
-            .filter(|(project, _)| {
-                request
-                    .query
-                    .as_ref()
-                    .is_none_or(|query| project.contains(query))
-            })
-            .map(|(project, mut keys)| {
-                keys.sort();
-                json!({ "project": project, "keys": keys, "key_count": keys.len() })
-            })
-            .collect::<Vec<_>>();
-        values.sort_by(|a, b| a["project"].as_str().cmp(&b["project"].as_str()));
-        let total = values.len();
-        let values = paginate_values(values, request.limit, request.offset);
+        let result =
+            self.secrets
+                .list_projects(request.query.as_deref(), request.limit, request.offset)?;
 
         Ok(json!({
-            "total": total,
-            "count": values.len(),
-            "limit": clamp_limit(request.limit),
-            "offset": request.offset.unwrap_or(0),
-            "has_more": request.offset.unwrap_or(0) + values.len() < total,
-            "projects": values
+            "total": result.total,
+            "count": result.count,
+            "limit": result.limit,
+            "offset": result.offset,
+            "has_more": result.has_more,
+            "projects": result
+                .projects
+                .into_iter()
+                .map(|project| {
+                    json!({
+                        "project": project.project,
+                        "keys": project.keys,
+                        "key_count": project.key_count
+                    })
+                })
+                .collect::<Vec<_>>()
         }))
     }
 
     pub fn discover_project_context(&self, request: DiscoverProjectRequest) -> Result<Value> {
-        let path = request.path.unwrap_or_else(|| ".".to_string());
-        let root = Path::new(&path);
-        let context = discover_project_context(root);
-        let requirements = infer_required_env_vars(root);
-
-        let project_name = request
-            .project
-            .or_else(|| context.as_ref().map(|ctx| ctx.name.clone()));
-        let attached = if let Some(project) = &project_name {
-            self.db.list_secrets(&ListFilter {
-                project: Some(project.clone()),
-                ..Default::default()
-            })?
-        } else {
-            Vec::new()
-        };
-
-        Ok(json!({
-            "found": context.is_some(),
-            "path": path,
-            "project": project_name,
-            "root": context.as_ref().map(|ctx| ctx.root.display().to_string()),
-            "detector": context.as_ref().map(|ctx| ctx.detector),
-            "workspace_root": context
-                .as_ref()
-                .and_then(|ctx| ctx.workspace_root.as_ref())
-                .map(|root| root.display().to_string()),
-            "workspace_detector": context.as_ref().and_then(|ctx| ctx.workspace_detector),
-            "required_vars": requirements.vars,
-            "inference_sources": requirements.sources,
-            "attached_secret_count": attached.len(),
-            "attached_secret_names": attached.into_iter().map(|entry| entry.name).collect::<Vec<_>>(),
-            "scan_roots": context
-                .as_ref()
-                .map(|ctx| {
-                    let mut roots = vec![ctx.root.display().to_string()];
-                    if let Some(workspace_root) = &ctx.workspace_root {
-                        roots.push(workspace_root.display().to_string());
-                    }
-                    roots
-                })
-                .unwrap_or_else(|| vec![path.clone()])
-        }))
+        let context = self
+            .secrets
+            .discover_project_context(request.path.as_deref(), request.project.as_deref())?;
+        serde_json::to_value(context).map_err(Into::into)
     }
 
     pub fn check_health(&self) -> Result<Value> {
-        let service = crate::services::secrets::SecretService::new_ref(self.db);
-        let health = service.health_view()?;
+        let health = self.secrets.health_view()?;
         Ok(health.to_mcp_json())
     }
 
     pub fn list_keys_for_project(&self, request: ListProjectKeysRequest) -> Result<Value> {
-        let entries = self.db.list_secrets(&ListFilter {
-            project: Some(request.project.clone()),
-            ..Default::default()
-        })?;
-        let mut filtered = entries
-            .into_iter()
-            .filter(|entry| {
-                request
-                    .provider
-                    .as_ref()
-                    .is_none_or(|provider| entry.provider == *provider)
-            })
-            .filter(|entry| {
-                request.query.as_ref().is_none_or(|query| {
-                    entry.name.contains(query)
-                        || entry.env_var.contains(query)
-                        || entry.description.contains(query)
-                        || entry.provider.contains(query)
-                })
-            })
-            .collect::<Vec<_>>();
-        let scored = request
-            .query
-            .as_ref()
-            .map(|query| rank_entries_for_query(filtered.as_mut_slice(), query))
-            .unwrap_or_else(|| {
-                filtered.sort_by(|a, b| a.name.cmp(&b.name));
-                filtered
-                    .into_iter()
-                    .map(|entry| ScoredEntry {
-                        entry,
-                        relevance_score: 0,
-                        matched_fields: Vec::new(),
-                    })
-                    .collect()
-            });
-        let total = scored.len();
-        let keys = paginate_scored_entries(scored, request.limit, request.offset)
-            .into_iter()
-            .map(scored_entry_to_json)
-            .collect::<Vec<_>>();
-        Ok(json!({
-            "project": request.project,
-            "total": total,
-            "count": keys.len(),
-            "limit": clamp_limit(request.limit),
-            "offset": request.offset.unwrap_or(0),
-            "has_more": request.offset.unwrap_or(0) + keys.len() < total,
-            "keys": keys
-        }))
+        let result = self.secrets.list_project_keys(
+            &request.project,
+            request.query.as_deref(),
+            request.provider.as_deref(),
+            request.limit,
+            request.offset,
+        )?;
+        Ok(project_keys_result_to_json(result))
     }
 
     pub fn add_key(&self, request: AddKeyRequest) -> Result<Value> {
         validate_env_var_name(&request.env_var)?;
         let name = request.env_var.to_lowercase().replace('_', "-");
         let provider = request.provider.unwrap_or_else(|| {
-            models::infer_provider(&request.env_var)
-                .unwrap_or("other")
-                .to_string()
+            self.secrets
+                .infer_provider_for_env_var(&request.env_var)
+                .unwrap_or_else(|| "other".to_string())
         });
-        if self.db.secret_exists(&name)? {
-            return Ok(json!({
+
+        let AddKeyRequest {
+            env_var,
+            value,
+            provider: _,
+            description,
+            projects,
+            account_name,
+            org_name,
+            source,
+            environment,
+            permission_profile,
+            scopes,
+            apply_url,
+        } = request;
+
+        let result = self.secrets.create_secret(SecretDraft {
+            env_var: env_var.clone(),
+            value,
+            provider: provider.clone(),
+            account_name: account_name.unwrap_or_default(),
+            org_name: org_name.unwrap_or_default(),
+            description: description.unwrap_or_default(),
+            source: source.unwrap_or_else(|| "mcp:add_key".to_string()),
+            environment: environment.unwrap_or_default(),
+            permission_profile: permission_profile.unwrap_or_default(),
+            scopes: scopes.unwrap_or_default(),
+            projects: projects.unwrap_or_default(),
+            apply_url: apply_url.unwrap_or_default(),
+            expires_at: None,
+        });
+
+        match result {
+            Ok(entry) => Ok(json!({
+                "success": true,
+                "code": "created",
+                "name": name,
+                "env_var": entry.env_var,
+                "provider": provider,
+                "message": format!("Secret '{}' added successfully", entry.name),
+                "error": Value::Null,
+                "existing_name": Value::Null,
+                "hint": "Value stored securely and encrypted at rest."
+            })),
+            Err(error) if error.to_string().contains("already exists") => Ok(json!({
                 "success": false,
                 "code": "already_exists",
                 "name": name,
-                "env_var": request.env_var,
+                "env_var": env_var,
                 "provider": provider,
                 "message": "Secret already exists in KeyFlow.",
                 "error": "Use update flow instead.",
                 "existing_name": name,
-                "hint": "Call get_key_info first, then update the existing secret if needed."
-            }));
+                "hint": "Call inspect_key first, then update the existing secret if needed."
+            })),
+            Err(error) => Err(error),
         }
-        let now = Utc::now();
-
-        let entry = SecretEntry {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: name.clone(),
-            env_var: request.env_var.clone(),
-            provider: provider.clone(),
-            account_name: request.account_name.unwrap_or_default(),
-            org_name: request.org_name.unwrap_or_default(),
-            description: request.description.unwrap_or_default(),
-            source: request.source.unwrap_or_else(|| "mcp:add_key".to_string()),
-            environment: request.environment.unwrap_or_default(),
-            permission_profile: request.permission_profile.unwrap_or_default(),
-            scopes: request.scopes.unwrap_or_default(),
-            projects: request.projects.unwrap_or_default(),
-            apply_url: request.apply_url.unwrap_or_default(),
-            expires_at: None,
-            created_at: now,
-            updated_at: now,
-            last_used_at: None,
-            last_verified_at: Some(now),
-            is_active: true,
-        };
-
-        self.db.add_secret(&entry, &request.value)?;
-
-        Ok(json!({
-            "success": true,
-            "code": "created",
-            "name": name,
-            "env_var": entry.env_var,
-            "provider": provider,
-            "message": format!("Secret '{}' added successfully", entry.name),
-            "error": Value::Null,
-            "existing_name": Value::Null,
-            "hint": "Value stored securely and encrypted at rest."
-        }))
     }
 
     pub fn get_env_snippet(&self, filter: EnvSnippetRequest) -> Result<Value> {
@@ -450,7 +336,7 @@ impl<'a> VaultService<'a> {
             bail!("'project' must be specified");
         }
 
-        let entries = self.db.list_secrets(&ListFilter {
+        let entries = self.secrets.list_entries(&ListFilter {
             project: filter.project.clone(),
             ..Default::default()
         })?;
@@ -469,7 +355,7 @@ impl<'a> VaultService<'a> {
             let value = if filter.mask_values {
                 "***".to_string()
             } else {
-                self.db.get_secret_value(&entry.name)?
+                self.secrets.get_secret_value(&entry.name)?
             };
             lines.push(format!("{}={}", entry.env_var, value));
             keys.push(json!({
@@ -489,239 +375,47 @@ impl<'a> VaultService<'a> {
     }
 
     pub fn check_project_readiness(&self, request: ProjectReadinessRequest) -> Result<Value> {
-        let discovery_path = request.path.clone().unwrap_or_else(|| ".".to_string());
-        let inferred = if request.required_vars.is_empty() {
-            Some(infer_required_env_vars(Path::new(&discovery_path)))
-        } else {
-            None
-        };
-        let required_vars = if let Some(inferred) = &inferred {
-            inferred.vars.clone()
-        } else {
-            request.required_vars.clone()
-        };
-        let entries = self.db.list_secrets(&ListFilter {
-            project: Some(request.project.clone()),
-            ..Default::default()
-        })?;
-        let mut entries_by_env = HashMap::<String, Vec<&SecretEntry>>::new();
-        for entry in &entries {
-            entries_by_env
-                .entry(entry.env_var.clone())
-                .or_default()
-                .push(entry);
-        }
-
-        let mut available = Vec::new();
-        let mut attention = Vec::new();
-        let mut missing = Vec::new();
-        let mut expired = Vec::new();
-        let mut actions = Vec::new();
-
-        for env_var in &required_vars {
-            match entries_by_env
-                .get(env_var)
-                .and_then(|candidates| best_entry_for_env_var(candidates))
-            {
-                Some(entry) => match entry.status() {
-                    KeyStatus::Expired => expired.push(json!({
-                        "env_var": env_var,
-                        "name": entry.name,
-                        "status": "expired",
-                        "expires_at": entry.expires_at.map(|d| d.to_rfc3339()),
-                        "apply_url": entry.apply_url,
-                        "severity": "blocked",
-                        "reason": "Attached key is expired and must be rotated before use."
-                    })),
-                    KeyStatus::ExpiringSoon => attention.push(json!({
-                        "env_var": env_var,
-                        "name": entry.name,
-                        "status": "expiring_soon",
-                        "expires_at": entry.expires_at.map(|d| d.to_rfc3339()),
-                        "severity": "warning",
-                        "reason": "Attached key exists but expires soon. Rotate it proactively."
-                    })),
-                    KeyStatus::Inactive => attention.push(json!({
-                        "env_var": env_var,
-                        "name": entry.name,
-                        "status": "inactive",
-                        "severity": "warning",
-                        "reason": "Attached key exists but is inactive."
-                    })),
-                    KeyStatus::Unknown => attention.push(json!({
-                        "env_var": env_var,
-                        "name": entry.name,
-                        "status": "unknown",
-                        "severity": "warning",
-                        "reason": "Attached key exists but its health is unclear."
-                    })),
-                    _ => available.push(json!({
-                        "env_var": env_var,
-                        "name": entry.name,
-                        "status": "ok",
-                        "severity": "healthy",
-                        "reason": "Attached key is available for this project."
-                    })),
-                },
-                None => {
-                    let suggestion = format!(
-                        "Run: kf add {} \"<value>\" --projects {}",
-                        env_var, request.project
-                    );
-                    missing.push(json!({
-                        "env_var": env_var,
-                        "suggestion": suggestion,
-                        "severity": "blocked",
-                        "reason": "No attached key found for this required env var."
-                    }));
-                }
-            }
-        }
-
-        if !missing.is_empty() {
-            actions.push("Add the missing required keys to this project.");
-        }
-        if !expired.is_empty() {
-            actions.push("Rotate expired keys before running the project.");
-        }
-        if !attention.is_empty() {
-            actions.push("Review keys that are expiring soon or inactive.");
-        }
-        let is_ready = missing.is_empty() && expired.is_empty();
-        let status = if !missing.is_empty() || !expired.is_empty() {
-            "blocked"
-        } else if !attention.is_empty() {
-            "attention"
-        } else {
-            "ready"
-        };
-        let human_summary = if is_ready && attention.is_empty() {
-            format!(
-                "Project '{}' is fully ready. All {} required secrets are healthy.",
-                request.project,
-                required_vars.len()
-            )
-        } else if is_ready {
-            let attention_names: Vec<&str> = attention
-                .iter()
-                .filter_map(|a| a.get("env_var").and_then(|v| v.as_str()))
-                .collect();
-            format!(
-                "Project '{}' can run but {} keys need attention: {}.",
-                request.project,
-                attention.len(),
-                attention_names.join(", ")
-            )
-        } else {
-            let missing_names: Vec<&str> = missing
-                .iter()
-                .filter_map(|m| m.get("env_var").and_then(|v| v.as_str()))
-                .collect();
-            let expired_names: Vec<&str> = expired
-                .iter()
-                .filter_map(|e| e.get("env_var").and_then(|v| v.as_str()))
-                .collect();
-            let mut parts = Vec::new();
-            if !missing_names.is_empty() {
-                parts.push(format!("missing: {}", missing_names.join(", ")));
-            }
-            if !expired_names.is_empty() {
-                parts.push(format!("expired: {}", expired_names.join(", ")));
-            }
-            format!(
-                "Project '{}' is NOT ready. {} out of {} required keys have issues. {}",
-                request.project,
-                missing.len() + expired.len(),
-                required_vars.len(),
-                parts.join("; ")
-            )
-        };
-        let next_steps: Vec<String> = missing
-            .iter()
-            .filter_map(|m| {
-                m.get("suggestion")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string)
-            })
-            .chain(expired.iter().filter_map(|e| {
-                let name = e.get("name").and_then(|v| v.as_str())?;
-                let url = e
-                    .get("apply_url")
-                    .and_then(|v| v.as_str())
-                    .filter(|u| !u.is_empty());
-                Some(if let Some(url) = url {
-                    format!("Rotate '{}' - renew at {}", name, url)
-                } else {
-                    format!("Rotate '{}' - expired key needs replacement", name)
-                })
-            }))
-            .collect();
-        Ok(json!({
-            "project": request.project,
-            "mode": if inferred.is_some() { "inferred" } else { "explicit" },
-            "status": status,
-            "ready": is_ready,
-            "summary": if status == "ready" {
-                format!("All {} required secrets are available and healthy", required_vars.len())
-            } else if status == "attention" {
-                format!("All {} required secrets exist, but {} need review", required_vars.len(), attention.len())
-            } else {
-                format!("{} missing, {} expired out of {} required", missing.len(), expired.len(), required_vars.len())
-            },
-            "required_vars": required_vars,
-            "inference_sources": inferred
-                .as_ref()
-                .map(|requirements| requirements.sources.clone())
-                .unwrap_or_default(),
-            "available": available,
-            "attention": attention,
-            "missing": missing,
-            "expired": expired,
-            "actions": actions,
-            "human_summary": human_summary,
-            "next_steps": next_steps,
-            "total_required": required_vars.len(),
-            "total_available": available.len() + attention.len(),
-            "healthy_count": available.len(),
-            "attention_count": attention.len(),
-            "missing_count": missing.len(),
-            "expired_count": expired.len(),
-        }))
+        let report = self.secrets.check_project_readiness(
+            &request.project,
+            &request.required_vars,
+            request.path.as_deref(),
+        )?;
+        serde_json::to_value(report).map_err(Into::into)
     }
 }
 
-fn clamp_limit(limit: Option<usize>) -> usize {
-    limit.unwrap_or(20).clamp(1, 100)
+fn search_result_to_json(result: SearchResult) -> Value {
+    let keys = result
+        .keys
+        .into_iter()
+        .map(scored_entry_to_json)
+        .collect::<Vec<_>>();
+    json!({
+        "found": result.found,
+        "total": result.total,
+        "count": result.count,
+        "limit": result.limit,
+        "offset": result.offset,
+        "has_more": result.has_more,
+        "keys": keys
+    })
 }
 
-fn normalized_offset(offset: Option<usize>) -> usize {
-    offset.unwrap_or(0)
-}
-
-fn paginate_entries(
-    entries: Vec<SecretEntry>,
-    limit: Option<usize>,
-    offset: Option<usize>,
-) -> Vec<SecretEntry> {
-    let offset = normalized_offset(offset);
-    let limit = clamp_limit(limit);
-    entries.into_iter().skip(offset).take(limit).collect()
-}
-
-fn paginate_scored_entries(
-    entries: Vec<ScoredEntry>,
-    limit: Option<usize>,
-    offset: Option<usize>,
-) -> Vec<ScoredEntry> {
-    let offset = normalized_offset(offset);
-    let limit = clamp_limit(limit);
-    entries.into_iter().skip(offset).take(limit).collect()
-}
-
-fn paginate_values(values: Vec<Value>, limit: Option<usize>, offset: Option<usize>) -> Vec<Value> {
-    let offset = normalized_offset(offset);
-    let limit = clamp_limit(limit);
-    values.into_iter().skip(offset).take(limit).collect()
+fn project_keys_result_to_json(result: ProjectKeysResult) -> Value {
+    let keys = result
+        .keys
+        .into_iter()
+        .map(scored_entry_to_json)
+        .collect::<Vec<_>>();
+    json!({
+        "project": result.project,
+        "total": result.total,
+        "count": result.count,
+        "limit": result.limit,
+        "offset": result.offset,
+        "has_more": result.has_more,
+        "keys": keys
+    })
 }
 
 fn provider_health_snapshot(provider: &str, entries: &[SecretEntry]) -> Value {
@@ -771,156 +465,11 @@ fn provider_health_snapshot(provider: &str, entries: &[SecretEntry]) -> Value {
         "stale": stale,
     })
 }
-
-#[derive(Debug)]
-struct ScoredEntry {
-    entry: SecretEntry,
-    relevance_score: i64,
-    matched_fields: Vec<&'static str>,
-}
-
-fn rank_entries_for_query(entries: &mut [SecretEntry], query: &str) -> Vec<ScoredEntry> {
-    let query = query.trim();
-    let mut scored = entries
-        .iter()
-        .cloned()
-        .map(|entry| {
-            let (score, matched_fields) = score_entry(&entry, query);
-            ScoredEntry {
-                entry,
-                relevance_score: score,
-                matched_fields,
-            }
-        })
-        .collect::<Vec<_>>();
-    scored.sort_by(|a, b| {
-        b.relevance_score
-            .cmp(&a.relevance_score)
-            .then_with(|| b.entry.is_active.cmp(&a.entry.is_active))
-            .then_with(|| {
-                a.entry
-                    .metadata_gaps()
-                    .len()
-                    .cmp(&b.entry.metadata_gaps().len())
-            })
-            .then_with(|| a.entry.name.cmp(&b.entry.name))
-    });
-    scored
-}
-
-fn score_entry(entry: &SecretEntry, query: &str) -> (i64, Vec<&'static str>) {
-    let query_lower = query.to_ascii_lowercase();
-    let query_upper = query.to_ascii_uppercase();
-    let mut score = 0;
-    let mut fields = Vec::new();
-
-    let name_lower = entry.name.to_ascii_lowercase();
-    let env_upper = entry.env_var.to_ascii_uppercase();
-    let provider_lower = entry.provider.to_ascii_lowercase();
-    let account_lower = entry.account_name.to_ascii_lowercase();
-    let org_lower = entry.org_name.to_ascii_lowercase();
-    let description_lower = entry.description.to_ascii_lowercase();
-
-    if entry.name == query || name_lower == query_lower {
-        score += 120;
-        fields.push("name");
-    } else if name_lower.contains(&query_lower) {
-        score += 70;
-        fields.push("name");
-    }
-
-    if entry.env_var == query || env_upper == query_upper {
-        score += 140;
-        fields.push("env_var");
-    } else if env_upper.contains(&query_upper) {
-        score += 90;
-        fields.push("env_var");
-    }
-
-    if entry.provider == query || provider_lower == query_lower {
-        score += 80;
-        fields.push("provider");
-    } else if provider_lower.contains(&query_lower) {
-        score += 45;
-        fields.push("provider");
-    }
-
-    if account_lower.contains(&query_lower) {
-        score += 30;
-        fields.push("account_name");
-    }
-    if org_lower.contains(&query_lower) {
-        score += 25;
-        fields.push("org_name");
-    }
-    if description_lower.contains(&query_lower) {
-        score += 20;
-        fields.push("description");
-    }
-    if entry.projects.iter().any(|project| {
-        project.eq_ignore_ascii_case(query) || project.to_ascii_lowercase().contains(&query_lower)
-    }) {
-        score += 55;
-        fields.push("projects");
-    }
-    if entry
-        .scopes
-        .iter()
-        .any(|scope| scope.to_ascii_lowercase().contains(&query_lower))
-    {
-        score += 15;
-        fields.push("scopes");
-    }
-
-    if entry.is_active {
-        score += 5;
-    }
-    if matches!(entry.status(), KeyStatus::Expired) {
-        score -= 15;
-    }
-
-    fields.sort_unstable();
-    fields.dedup();
-    (score, fields)
-}
-
-fn scored_entry_to_json(scored: ScoredEntry) -> Value {
+fn scored_entry_to_json(scored: crate::services::secrets::RankedSecretEntry) -> Value {
     let mut value = models::secret_to_json(&scored.entry);
     value["relevance_score"] = json!(scored.relevance_score);
     value["matched_fields"] = json!(scored.matched_fields);
     value
-}
-
-fn best_entry_for_env_var<'a>(entries: &[&'a SecretEntry]) -> Option<&'a SecretEntry> {
-    entries.iter().copied().max_by(|a, b| {
-        readiness_priority(a)
-            .cmp(&readiness_priority(b))
-            .then_with(|| {
-                b.last_verified_at
-                    .unwrap_or(b.created_at)
-                    .cmp(&a.last_verified_at.unwrap_or(a.created_at))
-            })
-    })
-}
-
-fn readiness_priority(entry: &SecretEntry) -> i32 {
-    match entry.status() {
-        KeyStatus::Active => 5,
-        KeyStatus::ExpiringSoon => 4,
-        KeyStatus::Unknown => 3,
-        KeyStatus::Inactive => 2,
-        KeyStatus::Expired => 1,
-    }
-}
-
-fn validate_env_var_name(name: &str) -> Result<()> {
-    if name.is_empty() {
-        bail!("Environment variable name cannot be empty");
-    }
-    if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-        bail!("Invalid environment variable name '{name}': only [A-Za-z0-9_] allowed");
-    }
-    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1027,6 +576,7 @@ where
 mod tests {
     use super::*;
     use crate::mcp::test_helpers::{add_secret, test_db as test_service};
+    use crate::services::secrets::SecretService;
     use std::fs;
     use tempfile::tempdir;
 
@@ -1050,7 +600,8 @@ mod tests {
             false,
         );
         add_secret(&db, "github-main", "GITHUB_TOKEN", "github", &["ops"], true);
-        let service = VaultService::new(&db);
+        let secret_service = SecretService::new_ref(&db);
+        let service = VaultService::new(&secret_service);
 
         let result = service
             .search_keys(SearchKeysRequest {
@@ -1110,7 +661,8 @@ mod tests {
             &["demo"],
             true,
         );
-        let service = VaultService::new(&db);
+        let secret_service = SecretService::new_ref(&db);
+        let service = VaultService::new(&secret_service);
 
         let result = service
             .search_keys(SearchKeysRequest {
@@ -1136,7 +688,8 @@ mod tests {
         add_secret(&db, "a-key", "ALPHA_KEY", "alpha", &["alpha"], true);
         add_secret(&db, "b-key", "BETA_KEY", "beta", &["beta"], true);
         add_secret(&db, "b-extra", "BETA_EXTRA", "beta", &["beta"], true);
-        let service = VaultService::new(&db);
+        let secret_service = SecretService::new_ref(&db);
+        let service = VaultService::new(&secret_service);
 
         let projects = service
             .list_projects(ListProjectsRequest {
@@ -1195,7 +748,8 @@ mod tests {
             &["demo-app"],
             true,
         );
-        let service = VaultService::new(&db);
+        let secret_service = SecretService::new_ref(&db);
+        let service = VaultService::new(&secret_service);
 
         let discovered = service
             .discover_project_context(DiscoverProjectRequest {
@@ -1275,7 +829,8 @@ mod tests {
             is_active: true,
         };
         db.add_secret(&entry, "secret-value").unwrap();
-        let service = VaultService::new(&db);
+        let secret_service = SecretService::new_ref(&db);
+        let service = VaultService::new(&secret_service);
 
         let readiness = service
             .check_project_readiness(ProjectReadinessRequest {

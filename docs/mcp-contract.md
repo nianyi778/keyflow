@@ -1,6 +1,6 @@
 # KeyFlow MCP Contract
 
-> Last updated: 2026-03-07
+> Last updated: 2026-03-16
 > Scope: stable contract for `tools`, `resources`, `prompts`, `errors`, and `transports`
 
 ## Overview
@@ -84,7 +84,7 @@ KeyFlow tools roughly fall into four groups:
 
 ### discover
 
-#### `discover_project_context`
+#### `discover_project`
 
 Purpose:
 
@@ -107,6 +107,57 @@ Key outputs:
 - `inference_sources`
 - `attached_secret_count`
 - `attached_secret_names`
+
+#### `discover_providers`
+
+Purpose:
+
+- list providers and key counts
+
+#### `discover_projects`
+
+Purpose:
+
+- list projects and attached key names
+
+Key inputs:
+
+- `query`
+- `limit`
+- `offset`
+
+Key outputs:
+
+- `total`
+- `count`
+- `limit`
+- `offset`
+- `has_more`
+- `projects`
+
+#### `discover_project_keys`
+
+Purpose:
+
+- list secret metadata for one project
+
+Key inputs:
+
+- `project`
+- `query`
+- `provider`
+- `limit`
+- `offset`
+
+Key outputs:
+
+- `project`
+- `total`
+- `count`
+- `limit`
+- `offset`
+- `has_more`
+- `keys`
 
 ### inspect
 
@@ -135,7 +186,7 @@ Key outputs:
 - `has_more`
 - `keys`
 
-#### `get_key_info`
+#### `inspect_key`
 
 Purpose:
 
@@ -149,124 +200,9 @@ Output:
 
 - one metadata object
 
-#### `list_providers`
-
-Purpose:
-
-- list providers and key counts
-
-#### `list_projects`
-
-Purpose:
-
-- list projects and attached key names
-
-Key inputs:
-
-- `query`
-- `limit`
-- `offset`
-
-Key outputs:
-
-- `total`
-- `count`
-- `limit`
-- `offset`
-- `has_more`
-- `projects`
-
-#### `list_keys_for_project`
-
-Purpose:
-
-- list secret metadata for one project
-
-Key inputs:
-
-- `project`
-- `query`
-- `provider`
-- `limit`
-- `offset`
-
-Key outputs:
-
-- `project`
-- `total`
-- `count`
-- `limit`
-- `offset`
-- `has_more`
-- `keys`
-
-#### `check_health`
-
-Purpose:
-
-- get structured vault health buckets
-
-Key outputs:
-
-- `summary`
-- `status`
-- `expired`
-- `expiring`
-- `unused`
-- `inactive`
-- `metadata_gaps`
-- `duplicates`
-- `provider_old_keys`
-- `source_quality`
-- `unverified`
-
 ### reuse
 
-#### `get_env_snippet`
-
-Purpose:
-
-- build a `.env` snippet for one project
-
-Key inputs:
-
-- `project`
-- `mask_values`
-
-#### `check_project_readiness`
-
-Purpose:
-
-- compare one project’s required vars against attached secrets
-
-Key inputs:
-
-- `project`
-- `path`
-- `required_vars`
-
-Behavior:
-
-- if `required_vars` is present and non-empty, readiness runs in `explicit` mode
-- if `required_vars` is empty, KeyFlow infers vars from project files and runs in `inferred` mode
-
-Key outputs:
-
-- `project`
-- `mode`
-- `ready`
-- `summary`
-- `required_vars`
-- `inference_sources`
-- `available`
-- `missing`
-- `expired`
-- `total_required`
-- `total_available`
-
-### maintain
-
-#### `add_key`
+#### `reuse_add_key`
 
 Purpose:
 
@@ -295,6 +231,70 @@ Current `code` values:
 - `created`
 - `already_exists`
 
+#### `reuse_env_snippet`
+
+Purpose:
+
+- build a `.env` snippet for one project
+
+Key inputs:
+
+- `project`
+- `mask_values`
+
+### maintain
+
+#### `maintain_health`
+
+Purpose:
+
+- get structured vault health buckets
+
+Key outputs:
+
+- `summary`
+- `status`
+- `expired`
+- `expiring`
+- `unused`
+- `inactive`
+- `metadata_gaps`
+- `duplicates`
+- `provider_old_keys`
+- `source_quality`
+- `unverified`
+
+#### `maintain_project_readiness`
+
+Purpose:
+
+- compare one project's required vars against attached secrets
+
+Key inputs:
+
+- `project`
+- `path`
+- `required_vars`
+
+Behavior:
+
+- if `required_vars` is present and non-empty, readiness runs in `explicit` mode
+- if `required_vars` is empty, KeyFlow infers vars from project files and runs in `inferred` mode
+
+Key outputs:
+
+- `project`
+- `mode`
+- `ready`
+- `summary`
+- `required_vars`
+- `inference_sources`
+- `available`
+- `missing`
+- `expired`
+- `total_required`
+- `total_available`
+
 ## Resources
 
 Resources provide read-only context snapshots for AI clients.
@@ -318,15 +318,15 @@ For project work:
 
 1. read `vault://current-project`
 2. read `vault://project/{name}` if a project name is available
-3. call `check_project_readiness`
-4. call `search_keys` or `add_key` only if needed
+3. call `maintain_project_readiness`
+4. call `search_keys` or `reuse_add_key` only if needed
 
 For provider cleanup:
 
 1. read `vault://providers`
 2. read `vault://provider/{name}`
 3. read `vault://health`
-4. call `get_key_info` or `search_keys` only if needed
+4. call `inspect_key` or `search_keys` only if needed
 
 ## Prompts
 

@@ -4,6 +4,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
 
 use crate::db::Database;
+use crate::services::secrets::SecretService;
 
 use super::prompts::PromptRegistry;
 use super::protocol::{classify_anyhow_error, handle_message};
@@ -14,7 +15,8 @@ pub fn serve_http(db: &Database, host: &str, port: u16) -> Result<()> {
     ensure_safe_bind_host(host)?;
     let listener = TcpListener::bind((host, port))
         .with_context(|| format!("Failed to bind MCP HTTP server on {host}:{port}"))?;
-    let service = VaultService::new(db);
+    let secret_service = SecretService::new_ref(db);
+    let service = VaultService::new(&secret_service);
     let prompts = PromptRegistry::new();
     let registry = ToolRegistry::new();
 
@@ -271,7 +273,8 @@ mod tests {
             &["demo"],
             true,
         );
-        let service = VaultService::new(&db);
+        let secret_service = SecretService::new_ref(&db);
+        let service = VaultService::new(&secret_service);
         let prompts = PromptRegistry::new();
         let registry = ToolRegistry::new();
 
@@ -299,7 +302,8 @@ mod tests {
     #[test]
     fn http_transport_returns_structured_error_body() {
         let (_dir, db) = test_db();
-        let service = VaultService::new(&db);
+        let secret_service = SecretService::new_ref(&db);
+        let service = VaultService::new(&secret_service);
         let prompts = PromptRegistry::new();
         let registry = ToolRegistry::new();
 

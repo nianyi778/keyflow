@@ -71,22 +71,22 @@ Confirm:
 
 Confirm these tools are listed and callable:
 
-- `discover_project_context`
+- `discover_project`
+- `discover_providers`
+- `discover_projects`
+- `discover_project_keys`
 - `search_keys`
-- `get_key_info`
-- `list_providers`
-- `list_projects`
-- `check_health`
-- `list_keys_for_project`
-- `add_key`
-- `get_env_snippet`
-- `check_project_readiness`
+- `inspect_key`
+- `reuse_add_key`
+- `reuse_env_snippet`
+- `maintain_health`
+- `maintain_project_readiness`
 
 Contract checks:
 
 - high-value tools publish `outputSchema`
 - paginated tools expose `total / count / limit / offset / has_more`
-- `add_key` returns stable success/failure codes
+- `reuse_add_key` returns stable success/failure codes
 - tool errors expose `error.data.keyflow_code`
 
 ## MCP Resources

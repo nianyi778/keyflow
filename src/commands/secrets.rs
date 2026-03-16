@@ -9,10 +9,10 @@ use std::path::Path;
 
 use crate::commands::auth::{open_db, select_secret};
 use crate::commands::helpers::{detect_project_name, get_default_url, parse_csv, PROVIDERS};
-use crate::models::infer_provider;
 use crate::models::{KeyStatus, ListFilter};
 use crate::services::secrets::{
-    parse_expires, parse_optional_expires, ImportRequest, SecretDraft, SecretService, SecretUpdate,
+    parse_expires, parse_optional_expires, ImportRequest, ScanImportRequest, SecretDraft,
+    SecretService, SecretUpdate,
 };
 
 pub struct ScanArgs {
@@ -120,14 +120,14 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
         bail!("Secret value cannot be empty");
     }
 
+    let inferred_provider = service.infer_provider_for_env_var(&env_var);
     let provider = match provider {
         Some(p) => p,
         None => {
-            let inferred = infer_provider(&env_var);
-            if let Some(ref p) = inferred {
-                println!("  {} provider: {}", style("▸").dim(), style(p).cyan());
+            if let Some(ref value) = inferred_provider {
+                println!("  {} provider: {}", style("▸").dim(), style(value).cyan());
             }
-            if interactive && inferred.is_none() {
+            if interactive && inferred_provider.is_none() {
                 let idx = Select::new()
                     .with_prompt("Provider")
                     .items(PROVIDERS)
@@ -135,7 +135,7 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
                     .interact()?;
                 PROVIDERS[idx].to_string()
             } else {
-                inferred.unwrap_or("other").to_string()
+                inferred_provider.unwrap_or_else(|| "other".to_string())
             }
         }
     };
@@ -143,7 +143,7 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
     let projects_vec: Vec<String> = match projects {
         Some(p) => parse_csv(&p),
         None => {
-            let detected = detect_project_name().unwrap_or_default();
+            let detected = service.detect_current_project_name().unwrap_or_default();
             if !detected.is_empty() {
                 println!(
                     "  {} project: {} (from current dir)",
@@ -174,6 +174,7 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
         source,
         environment: environment_val,
         permission_profile,
+        scopes: vec![],
         projects: projects_vec,
         apply_url,
         expires_at: parse_expires(expires)?,
@@ -296,7 +297,7 @@ pub fn cmd_get(name: Option<String>, raw: bool, copy: bool) -> Result<()> {
     let service = SecretService::new(open_db()?);
     let name = match name {
         Some(n) => n,
-        None => select_secret(service.db())?,
+        None => select_secret(&service)?,
     };
     let view = service.inspect_secret(&name)?;
 
@@ -395,7 +396,7 @@ pub fn cmd_remove(name: Option<String>, force: bool, purge: bool) -> Result<()> 
             }
             n
         }
-        None => select_secret(service.db())?,
+        None => select_secret(&service)?,
     };
 
     if !force {
@@ -483,12 +484,12 @@ pub fn cmd_update(args: UpdateArgs) -> Result<()> {
     let service = SecretService::new(open_db()?);
     let name = match name {
         Some(n) => {
-            if !service.db().secret_exists(&n)? {
+            if !service.secret_exists(&n)? {
                 bail!("Secret '{}' not found", n);
             }
             n
         }
-        None => select_secret(service.db())?,
+        None => select_secret(&service)?,
     };
 
     let scopes_vec = scopes.map(|s| parse_csv(&s));
@@ -1008,7 +1009,7 @@ pub fn cmd_verify(name: Option<String>, all: bool) -> Result<()> {
     } else {
         vec![match name {
             Some(name) => name,
-            None => select_secret(service.db())?,
+            None => select_secret(&service)?,
         }]
     };
 
@@ -1155,8 +1156,19 @@ pub fn cmd_scan(args: ScanArgs) -> Result<()> {
     }
 
     let service = SecretService::new(open_db()?);
-    let candidates =
-        service.scan_path(scan_path, args.recursive, args.skip_common, args.new_only)?;
+    let preview = service.scan_and_import_path(ScanImportRequest {
+        path: scan_path,
+        recursive: args.recursive,
+        skip_common: args.skip_common,
+        new_only: args.new_only,
+        apply: false,
+        provider: args.provider.as_deref().unwrap_or("imported"),
+        account_name: args.account.as_deref().unwrap_or(""),
+        project_override: args.project.as_deref(),
+        source: args.source.as_deref(),
+        on_conflict: &args.on_conflict,
+    })?;
+    let candidates = preview.candidates;
     if candidates.is_empty() {
         println!("{}", style("No candidate keys found.").dim());
         return Ok(());
@@ -1251,17 +1263,19 @@ pub fn cmd_scan(args: ScanArgs) -> Result<()> {
         return Ok(());
     }
 
-    let provider = args.provider.unwrap_or_else(|| "imported".to_string());
-    let account_name = args.account.unwrap_or_default();
-    let stats = service.import_path(ImportRequest {
+    let imported = service.scan_and_import_path(ScanImportRequest {
         path: scan_path,
-        provider: &provider,
-        account_name: &account_name,
+        recursive: args.recursive,
+        skip_common: args.skip_common,
+        new_only: args.new_only,
+        apply: true,
+        provider: args.provider.as_deref().unwrap_or("imported"),
+        account_name: args.account.as_deref().unwrap_or(""),
         project_override: args.project.as_deref(),
         source: args.source.as_deref(),
         on_conflict: &args.on_conflict,
-        recursive: false,
     })?;
+    let stats = imported.import_stats.unwrap_or_default();
 
     println!(
         "\n{} Imported: {}, Overwritten: {}, Skipped: {}",

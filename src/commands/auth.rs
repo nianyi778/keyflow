@@ -8,6 +8,7 @@ use crate::crypto::Crypto;
 use crate::db::Database;
 use crate::models::{AppConfig, ListFilter};
 use crate::paths;
+use crate::services::secrets::SecretService;
 
 pub fn get_data_dir() -> Result<std::path::PathBuf> {
     paths::data_dir()
@@ -159,8 +160,8 @@ pub fn open_db() -> Result<Database> {
     Database::open(db_path.to_str().unwrap(), crypto)
 }
 
-pub(crate) fn select_secret(db: &Database) -> Result<String> {
-    let entries = db.list_secrets(&ListFilter::default())?;
+pub(crate) fn select_secret(service: &SecretService<'_>) -> Result<String> {
+    let entries = service.list_entries(&ListFilter::default())?;
     if entries.is_empty() {
         bail!("No secrets found. Add one with: kf add");
     }

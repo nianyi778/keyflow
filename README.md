@@ -59,7 +59,7 @@
 当前会入库的情况只有这些：
 - 你显式执行 `kf add`
 - 你显式执行 `kf import`
-- AI 通过 MCP 明确调用 `add_key`
+- AI 通过 MCP 明确调用 `reuse_add_key`
 
 当前不会发生这些事：
 - 不会自动监听你的 AI 对话并偷偷保存 token
@@ -68,15 +68,15 @@
 
 这是故意这样设计的。密钥管理不应该做成黑盒自动采集。
 
-### 2. `add_key` 是 AI 工具名，不是让你手写的命令
+### 2. `reuse_add_key` 是 AI 工具名，不是让你手写的命令
 
 如果你接入了支持 MCP 的 AI 工具，正确用法是自然语言：
-- “把这个 Resend key 存到 KeyFlow，account 记成 acme-mail”
-- “把刚申请的 Cloudflare token 保存起来，项目是 marketing-site”
+- "把这个 Resend key 存到 KeyFlow，account 记成 acme-mail"
+- "把刚申请的 Cloudflare token 保存起来，项目是 marketing-site"
 
-AI 在后台会调用 `add_key`。
+AI 在后台会调用 `reuse_add_key`。
 
-你不需要在聊天窗口里手写 `add_key`。
+你不需要在聊天窗口里手写 `reuse_add_key`。
 
 ### 3. AI 不是主入口，`CLI + MCP` 才是增强层
 
@@ -298,7 +298,7 @@ kf setup
 - “把这个 GitHub token 保存到 KeyFlow，项目是 website”
 - “把这个 Resend key 存起来，account 记成 acme-mail”
 
-AI 会在后台调用 MCP 工具 `add_key`。
+AI 会在后台调用 MCP 工具 `reuse_add_key`。
 
 这不是主入口，但可以作为加速器。
 
@@ -401,30 +401,36 @@ AI 默认只能看到元数据，不会直接拿到密钥值。
 - 发布前检查见：`docs/release-checklist.md`
 - 最近一次发布演练记录见：`docs/release-rehearsal-2026-03-07.md`
 
-只读工具：
-- `discover_project_context`：识别当前仓库或目录的项目上下文，并推断可能需要的 env vars
-- `search_keys`：搜索密钥元数据
-- `get_key_info`：查看单个密钥信息
-- `list_providers`：查看 provider 列表与数量
-- `list_projects`：查看项目标签
-- `check_health`：查看健康状态
-- `list_keys_for_project`：列出某个项目相关的密钥
+工具按 **discover / inspect / reuse / maintain** 四层组织：
 
-可写工具：
-- `add_key`：新增密钥到 vault
-- `get_env_snippet`：生成某个项目的 `.env` 片段
-- `check_project_readiness`：检查项目需要的密钥是否齐备
+**discover** — 发现 vault 中有什么：
+- `discover_project`：识别当前仓库或目录的项目上下文，推断需要的 env vars
+- `discover_providers`：查看 provider 列表与数量
+- `discover_projects`：查看项目标签
+- `discover_project_keys`：列出某个项目相关的密钥
+
+**inspect** — 查看具体条目：
+- `search_keys`：按关键词搜索密钥元数据
+- `inspect_key`：查看单个密钥详细信息
+
+**reuse** — 复用密钥：
+- `reuse_add_key`：新增密钥到 vault（可写）
+- `reuse_env_snippet`：生成某个项目的 `.env` 片段
+
+**maintain** — 健康维护：
+- `maintain_health`：查看 vault 整体健康状态
+- `maintain_project_readiness`：检查项目需要的密钥是否齐备
 
 推荐 AI 读取顺序：
 - 先读 `vault://current-project`
 - 再读 `vault://project/<name>` 或 `vault://provider/<name>`
-- 再决定要不要调用 `check_project_readiness`、`search_keys`、`add_key`
+- 再决定要不要调用 `maintain_project_readiness`、`search_keys`、`reuse_add_key`
 
 这样 AI 会先理解当前仓库、推断 required vars、查看当前已经挂载的密钥，再进入具体动作。
 
 ### 重要说明
 
-- `add_key` 是 MCP 工具名，不是让你在聊天窗口里手写的命令
+- `reuse_add_key` 是 MCP 工具名，不是让你在聊天窗口里手写的命令
 - 你应该使用自然语言
 - AI 在后台才会调用这些工具
 - 当前不会因为 AI 对话里出现了一段 token 就自动入库

@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 
 use crate::db::Database;
+use crate::services::secrets::SecretService;
 
 use super::prompts::PromptRegistry;
 use super::service::VaultService;
@@ -19,7 +20,8 @@ enum MessageFraming {
 pub fn serve_stdio(db: &Database) -> Result<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    let service = VaultService::new(db);
+    let secret_service = SecretService::new_ref(db);
+    let service = VaultService::new(&secret_service);
     let prompts = PromptRegistry::new();
     let registry = ToolRegistry::new();
     let mut reader = BufReader::new(stdin.lock());
@@ -236,17 +238,14 @@ impl McpError {
     }
 
     pub(crate) fn to_json(&self) -> Value {
-        let mut value = json!({
+        json!({
             "code": self.code,
             "message": self.message,
             "data": {
-                "keyflow_code": self.keyflow_code
+                "keyflow_code": self.keyflow_code,
+                "hint": self.hint
             }
-        });
-        if let Some(hint) = &self.hint {
-            value["data"]["hint"] = json!(hint);
-        }
-        value
+        })
     }
 }
 
@@ -385,6 +384,7 @@ pub(crate) fn classify_anyhow_error(value: anyhow::Error) -> McpError {
 mod tests {
     use super::*;
     use crate::mcp::test_helpers::test_db;
+    use crate::services::secrets::SecretService;
     use std::io::Cursor;
 
     fn add_secret(db: &Database, name: &str, env_var: &str, provider: &str, projects: &[&str]) {
@@ -439,7 +439,8 @@ mod tests {
     #[test]
     fn initialize_advertises_resource_capability() {
         let (_dir, db) = test_db();
-        let service = VaultService::new(&db);
+        let secret_service = SecretService::new_ref(&db);
+        let service = VaultService::new(&secret_service);
         let registry = ToolRegistry::new();
         let prompts = PromptRegistry::new();
         let message = json!({
@@ -468,7 +469,8 @@ mod tests {
     fn resources_list_and_read_project_snapshot() {
         let (_dir, db) = test_db();
         add_secret(&db, "openai-main", "OPENAI_API_KEY", "openai", &["demo"]);
-        let service = VaultService::new(&db);
+        let secret_service = SecretService::new_ref(&db);
+        let service = VaultService::new(&secret_service);
         let registry = ToolRegistry::new();
         let prompts = PromptRegistry::new();
 
@@ -525,7 +527,8 @@ mod tests {
     #[test]
     fn prompts_list_and_get_work() {
         let (_dir, db) = test_db();
-        let service = VaultService::new(&db);
+        let secret_service = SecretService::new_ref(&db);
+        let service = VaultService::new(&secret_service);
         let registry = ToolRegistry::new();
         let prompts = PromptRegistry::new();
 
@@ -562,7 +565,8 @@ mod tests {
     #[test]
     fn protocol_errors_include_keyflow_code_and_hint() {
         let (_dir, db) = test_db();
-        let service = VaultService::new(&db);
+        let secret_service = SecretService::new_ref(&db);
+        let service = VaultService::new(&secret_service);
         let registry = ToolRegistry::new();
         let prompts = PromptRegistry::new();
 

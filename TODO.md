@@ -1,6 +1,6 @@
 # KeyFlow TODO
 
-> 最后更新：2026-03-07
+> 最后更新：2026-03-16
 > 当前产品主线：本地加密的开发者密钥资产库
 > 当前主入口：CLI + MCP
 > 当前原则：不保留历史包袱，不为未上线版本做兼容设计
@@ -30,17 +30,21 @@ KeyFlow 现在只专注四件事：
 
 ## Now
 
-- [ ] 重写 CLI 服务层
-  目标：把 [secrets.rs](/Users/likai/personage/pachong/keyflow/src/commands/secrets.rs) 里的业务逻辑继续抽离，CLI 只保留参数解析和输出。
+- [x] 重写 CLI 服务层
+  目标：把 secrets.rs 里的业务逻辑继续抽离，CLI 只保留参数解析和输出。
+  完成：SecretService 成为唯一业务层，VaultService 降级为 JSON 包装。
 
-- [ ] 重做 MCP 工具契约
+- [x] 重做 MCP 工具契约
   目标：统一工具命名、输入 schema、输出 schema、错误格式，按 `discover / inspect / reuse / maintain` 分层。
+  完成：10 个工具按四层重命名，outputSchema 全覆盖，错误格式统一。
 
-- [ ] 标准化 `structuredContent`
+- [x] 标准化 `structuredContent`
   目标：所有 MCP 工具返回稳定结构，不再主要依赖文本里的 JSON dump。
+  完成：所有工具同时返回 content（text 回退）和 structuredContent（typed JSON）。
 
-- [ ] 重写 README
+- [x] 重写 README
   目标：删掉历史演进痕迹，只讲当前核心链路、数据模型、CLI 工作流和 MCP 能力。
+  完成：MCP 工具说明更新为四层分组，旧工具名引用全部替换。
 
 ## Next
 
@@ -57,7 +61,7 @@ KeyFlow 现在只专注四件事：
   不只识别 `package.json / Cargo.toml`，补 workspace / monorepo 场景。
 
 - [ ] 强化 readiness 检查
-  让 `check_project_readiness` 提供更明确的状态分级、缺失原因和建议动作。
+  让 `maintain_project_readiness` 提供更明确的状态分级、缺失原因和建议动作。
 
 - [ ] 重构 import / scan 流水线
   把扫描、预览、去重、冲突处理整理成更清晰的统一流程。

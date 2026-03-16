@@ -24,6 +24,7 @@ fn draft(env_var: &str, value: &str, provider: &str, projects: &[&str]) -> Secre
         source: "manual:test".to_string(),
         environment: String::new(),
         permission_profile: String::new(),
+        scopes: vec![],
         projects: projects.iter().map(|value| value.to_string()).collect(),
         apply_url: format!("https://example.com/{provider}"),
         expires_at: None,

@@ -1,9 +1,14 @@
 use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
+use serde::Serialize;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::commands::helpers::{detect_project_name_in_dir, parse_date, SKIP_VARS};
+use crate::commands::helpers::{
+    detect_project_name_in_dir, discover_project_context as discover_helper_project_context,
+    infer_required_env_vars, parse_date, SKIP_VARS,
+};
 use crate::db::{Database, MetadataUpdate};
 use crate::models::infer_provider;
 use crate::models::{
@@ -27,12 +32,30 @@ pub struct ImportRequest<'a> {
     pub recursive: bool,
 }
 
+pub struct ScanImportRequest<'a> {
+    pub path: &'a Path,
+    pub recursive: bool,
+    pub skip_common: bool,
+    pub new_only: bool,
+    pub apply: bool,
+    pub provider: &'a str,
+    pub account_name: &'a str,
+    pub project_override: Option<&'a str>,
+    pub source: Option<&'a str>,
+    pub on_conflict: &'a str,
+}
+
 #[derive(Clone)]
 pub struct ScanCandidate {
     pub env_var: String,
     pub provider: String,
     pub file: PathBuf,
     pub project_name: Option<String>,
+}
+
+pub struct ScanImportResult {
+    pub candidates: Vec<ScanCandidate>,
+    pub import_stats: Option<ImportStats>,
 }
 
 #[derive(Default)]
@@ -52,6 +75,7 @@ pub struct SecretDraft {
     pub source: String,
     pub environment: String,
     pub permission_profile: String,
+    pub scopes: Vec<String>,
     pub projects: Vec<String>,
     pub apply_url: String,
     pub expires_at: Option<DateTime<Utc>>,
@@ -145,6 +169,136 @@ pub struct SecretValueView {
     pub value: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct RankedSecretEntry {
+    pub entry: SecretEntry,
+    pub relevance_score: i64,
+    pub matched_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct SearchFilter {
+    pub provider: Option<String>,
+    pub project: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+    pub include_inactive: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchResult {
+    pub found: bool,
+    pub total: usize,
+    pub count: usize,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
+    pub keys: Vec<RankedSecretEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderCount {
+    pub provider: String,
+    pub key_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectKeys {
+    pub project: String,
+    pub keys: Vec<String>,
+    pub key_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectListResult {
+    pub total: usize,
+    pub count: usize,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
+    pub projects: Vec<ProjectKeys>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectKeysResult {
+    pub project: String,
+    pub total: usize,
+    pub count: usize,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
+    pub keys: Vec<RankedSecretEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectContext {
+    pub found: bool,
+    pub path: String,
+    pub project: Option<String>,
+    pub root: Option<String>,
+    pub detector: Option<String>,
+    pub workspace_root: Option<String>,
+    pub workspace_detector: Option<String>,
+    pub required_vars: Vec<String>,
+    pub inference_sources: Vec<String>,
+    pub attached_secret_count: usize,
+    pub attached_secret_names: Vec<String>,
+    pub scan_roots: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReadinessAvailable {
+    pub env_var: String,
+    pub name: String,
+    pub status: String,
+    pub expires_at: Option<String>,
+    pub severity: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReadinessMissing {
+    pub env_var: String,
+    pub suggestion: String,
+    pub severity: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReadinessExpired {
+    pub env_var: String,
+    pub name: String,
+    pub status: String,
+    pub expires_at: Option<String>,
+    pub apply_url: String,
+    pub severity: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReadinessReport {
+    pub project: String,
+    pub mode: String,
+    pub status: String,
+    pub ready: bool,
+    pub summary: String,
+    pub required_vars: Vec<String>,
+    pub inference_sources: Vec<String>,
+    pub available: Vec<ReadinessAvailable>,
+    pub attention: Vec<ReadinessAvailable>,
+    pub missing: Vec<ReadinessMissing>,
+    pub expired: Vec<ReadinessExpired>,
+    pub actions: Vec<String>,
+    pub human_summary: String,
+    pub next_steps: Vec<String>,
+    pub total_required: usize,
+    pub total_available: usize,
+    pub healthy_count: usize,
+    pub attention_count: usize,
+    pub missing_count: usize,
+    pub expired_count: usize,
+}
+
 enum DbHolder<'a> {
     Owned(Box<Database>),
     Borrowed(&'a Database),
@@ -210,6 +364,438 @@ impl<'a> SecretService<'a> {
 
     pub fn search_entries(&self, query: &str) -> Result<Vec<SecretEntry>> {
         self.db.search_secrets(query)
+    }
+
+    pub fn infer_provider_for_env_var(&self, env_var: &str) -> Option<String> {
+        infer_provider(env_var).map(str::to_string)
+    }
+
+    pub fn detect_current_project_name(&self) -> Option<String> {
+        discover_helper_project_context(Path::new(".")).map(|context| context.name)
+    }
+
+    pub fn search_ranked(&self, query: &str, filter: &SearchFilter) -> Result<SearchResult> {
+        let entries = self.db.search_secrets(query)?;
+        let mut filtered = entries
+            .into_iter()
+            .filter(|entry| filter.include_inactive || entry.is_active)
+            .filter(|entry| {
+                filter
+                    .provider
+                    .as_ref()
+                    .is_none_or(|provider| entry.provider == *provider)
+            })
+            .filter(|entry| {
+                filter
+                    .project
+                    .as_ref()
+                    .is_none_or(|project| entry.projects.iter().any(|item| item == project))
+            })
+            .collect::<Vec<_>>();
+        let scored = rank_entries_for_query(filtered.as_mut_slice(), query);
+        let total = filtered.len();
+        let limit = clamp_limit(filter.limit);
+        let offset = normalized_offset(filter.offset);
+        let keys = paginate_items(scored, filter.limit, filter.offset);
+
+        Ok(SearchResult {
+            found: !keys.is_empty(),
+            total,
+            count: keys.len(),
+            limit,
+            offset,
+            has_more: offset + keys.len() < total,
+            keys,
+        })
+    }
+
+    pub fn list_project_keys(
+        &self,
+        project: &str,
+        query: Option<&str>,
+        provider: Option<&str>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Result<ProjectKeysResult> {
+        let entries = self.db.list_secrets(&ListFilter {
+            project: Some(project.to_string()),
+            ..Default::default()
+        })?;
+        let mut filtered = entries
+            .into_iter()
+            .filter(|entry| provider.is_none_or(|provider| entry.provider == provider))
+            .filter(|entry| {
+                query.is_none_or(|query| {
+                    entry.name.contains(query)
+                        || entry.env_var.contains(query)
+                        || entry.description.contains(query)
+                        || entry.provider.contains(query)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let scored = query
+            .map(|query| rank_entries_for_query(filtered.as_mut_slice(), query))
+            .unwrap_or_else(|| {
+                filtered.sort_by(|a, b| a.name.cmp(&b.name));
+                filtered
+                    .into_iter()
+                    .map(|entry| RankedSecretEntry {
+                        entry,
+                        relevance_score: 0,
+                        matched_fields: Vec::new(),
+                    })
+                    .collect::<Vec<_>>()
+            });
+
+        let total = scored.len();
+        let limit_clamped = clamp_limit(limit);
+        let offset_normalized = normalized_offset(offset);
+        let keys = paginate_items(scored, limit, offset);
+
+        Ok(ProjectKeysResult {
+            project: project.to_string(),
+            total,
+            count: keys.len(),
+            limit: limit_clamped,
+            offset: offset_normalized,
+            has_more: offset_normalized + keys.len() < total,
+            keys,
+        })
+    }
+
+    pub fn list_providers(&self) -> Result<Vec<ProviderCount>> {
+        let entries = self.db.list_secrets(&ListFilter::default())?;
+        let mut counts = HashMap::<String, usize>::new();
+        for entry in entries {
+            *counts.entry(entry.provider).or_default() += 1;
+        }
+
+        let mut providers = counts
+            .into_iter()
+            .map(|(provider, key_count)| ProviderCount {
+                provider,
+                key_count,
+            })
+            .collect::<Vec<_>>();
+        providers.sort_by(|a, b| a.provider.cmp(&b.provider));
+        Ok(providers)
+    }
+
+    pub fn list_projects(
+        &self,
+        query: Option<&str>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Result<ProjectListResult> {
+        let entries = self.db.list_secrets(&ListFilter::default())?;
+        let mut projects = HashMap::<String, Vec<String>>::new();
+        for entry in entries {
+            for project in entry.projects {
+                projects
+                    .entry(project)
+                    .or_default()
+                    .push(entry.name.clone());
+            }
+        }
+
+        let mut values = projects
+            .into_iter()
+            .filter(|(project, _)| query.is_none_or(|query| project.contains(query)))
+            .map(|(project, mut keys)| {
+                keys.sort();
+                ProjectKeys {
+                    project,
+                    key_count: keys.len(),
+                    keys,
+                }
+            })
+            .collect::<Vec<_>>();
+        values.sort_by(|a, b| a.project.cmp(&b.project));
+        let total = values.len();
+        let limit_clamped = clamp_limit(limit);
+        let offset_normalized = normalized_offset(offset);
+        let projects = paginate_items(values, limit, offset);
+
+        Ok(ProjectListResult {
+            total,
+            count: projects.len(),
+            limit: limit_clamped,
+            offset: offset_normalized,
+            has_more: offset_normalized + projects.len() < total,
+            projects,
+        })
+    }
+
+    pub fn discover_project_context(
+        &self,
+        path: Option<&str>,
+        project: Option<&str>,
+    ) -> Result<ProjectContext> {
+        let path = path.unwrap_or(".").to_string();
+        let root = Path::new(&path);
+        let context = discover_helper_project_context(root);
+        let requirements = infer_required_env_vars(root);
+
+        let project_name = project
+            .map(str::to_string)
+            .or_else(|| context.as_ref().map(|ctx| ctx.name.clone()));
+        let attached = if let Some(project) = &project_name {
+            self.db.list_secrets(&ListFilter {
+                project: Some(project.clone()),
+                ..Default::default()
+            })?
+        } else {
+            Vec::new()
+        };
+
+        Ok(ProjectContext {
+            found: context.is_some(),
+            path: path.clone(),
+            project: project_name,
+            root: context.as_ref().map(|ctx| ctx.root.display().to_string()),
+            detector: context.as_ref().map(|ctx| ctx.detector.to_string()),
+            workspace_root: context
+                .as_ref()
+                .and_then(|ctx| ctx.workspace_root.as_ref())
+                .map(|workspace_root| workspace_root.display().to_string()),
+            workspace_detector: context
+                .as_ref()
+                .and_then(|ctx| ctx.workspace_detector)
+                .map(str::to_string),
+            required_vars: requirements.vars,
+            inference_sources: requirements.sources,
+            attached_secret_count: attached.len(),
+            attached_secret_names: attached.into_iter().map(|entry| entry.name).collect(),
+            scan_roots: context
+                .as_ref()
+                .map(|ctx| {
+                    let mut roots = vec![ctx.root.display().to_string()];
+                    if let Some(workspace_root) = &ctx.workspace_root {
+                        roots.push(workspace_root.display().to_string());
+                    }
+                    roots
+                })
+                .unwrap_or_else(|| vec![path]),
+        })
+    }
+
+    pub fn check_project_readiness(
+        &self,
+        project: &str,
+        required_vars: &[String],
+        path: Option<&str>,
+    ) -> Result<ReadinessReport> {
+        let discovery_path = path.unwrap_or(".");
+        let inferred = if required_vars.is_empty() {
+            Some(infer_required_env_vars(Path::new(discovery_path)))
+        } else {
+            None
+        };
+        let required_vars = inferred
+            .as_ref()
+            .map(|inferred| inferred.vars.clone())
+            .unwrap_or_else(|| required_vars.to_vec());
+
+        let entries = self.db.list_secrets(&ListFilter {
+            project: Some(project.to_string()),
+            ..Default::default()
+        })?;
+        let mut entries_by_env = HashMap::<String, Vec<&SecretEntry>>::new();
+        for entry in &entries {
+            entries_by_env
+                .entry(entry.env_var.clone())
+                .or_default()
+                .push(entry);
+        }
+
+        let mut available = Vec::new();
+        let mut attention = Vec::new();
+        let mut missing = Vec::new();
+        let mut expired = Vec::new();
+        let mut actions = Vec::new();
+
+        for env_var in &required_vars {
+            match entries_by_env
+                .get(env_var)
+                .and_then(|candidates| best_entry_for_env_var(candidates))
+            {
+                Some(entry) => match entry.status() {
+                    KeyStatus::Expired => expired.push(ReadinessExpired {
+                        env_var: env_var.clone(),
+                        name: entry.name.clone(),
+                        status: "expired".to_string(),
+                        expires_at: entry.expires_at.map(|d| d.to_rfc3339()),
+                        apply_url: entry.apply_url.clone(),
+                        severity: "blocked".to_string(),
+                        reason: "Attached key is expired and must be rotated before use."
+                            .to_string(),
+                    }),
+                    KeyStatus::ExpiringSoon => attention.push(ReadinessAvailable {
+                        env_var: env_var.clone(),
+                        name: entry.name.clone(),
+                        status: "expiring_soon".to_string(),
+                        expires_at: entry.expires_at.map(|d| d.to_rfc3339()),
+                        severity: "warning".to_string(),
+                        reason: "Attached key exists but expires soon. Rotate it proactively."
+                            .to_string(),
+                    }),
+                    KeyStatus::Inactive => attention.push(ReadinessAvailable {
+                        env_var: env_var.clone(),
+                        name: entry.name.clone(),
+                        status: "inactive".to_string(),
+                        expires_at: None,
+                        severity: "warning".to_string(),
+                        reason: "Attached key exists but is inactive.".to_string(),
+                    }),
+                    KeyStatus::Unknown => attention.push(ReadinessAvailable {
+                        env_var: env_var.clone(),
+                        name: entry.name.clone(),
+                        status: "unknown".to_string(),
+                        expires_at: None,
+                        severity: "warning".to_string(),
+                        reason: "Attached key exists but its health is unclear.".to_string(),
+                    }),
+                    _ => available.push(ReadinessAvailable {
+                        env_var: env_var.clone(),
+                        name: entry.name.clone(),
+                        status: "ok".to_string(),
+                        expires_at: None,
+                        severity: "healthy".to_string(),
+                        reason: "Attached key is available for this project.".to_string(),
+                    }),
+                },
+                None => {
+                    let suggestion =
+                        format!("Run: kf add {} \"<value>\" --projects {}", env_var, project);
+                    missing.push(ReadinessMissing {
+                        env_var: env_var.clone(),
+                        suggestion,
+                        severity: "blocked".to_string(),
+                        reason: "No attached key found for this required env var.".to_string(),
+                    });
+                }
+            }
+        }
+
+        if !missing.is_empty() {
+            actions.push("Add the missing required keys to this project.".to_string());
+        }
+        if !expired.is_empty() {
+            actions.push("Rotate expired keys before running the project.".to_string());
+        }
+        if !attention.is_empty() {
+            actions.push("Review keys that are expiring soon or inactive.".to_string());
+        }
+
+        let is_ready = missing.is_empty() && expired.is_empty();
+        let status = if !missing.is_empty() || !expired.is_empty() {
+            "blocked"
+        } else if !attention.is_empty() {
+            "attention"
+        } else {
+            "ready"
+        }
+        .to_string();
+
+        let human_summary = if is_ready && attention.is_empty() {
+            format!(
+                "Project '{}' is fully ready. All {} required secrets are healthy.",
+                project,
+                required_vars.len()
+            )
+        } else if is_ready {
+            let attention_names: Vec<&str> =
+                attention.iter().map(|item| item.env_var.as_str()).collect();
+            format!(
+                "Project '{}' can run but {} keys need attention: {}.",
+                project,
+                attention.len(),
+                attention_names.join(", ")
+            )
+        } else {
+            let missing_names: Vec<&str> =
+                missing.iter().map(|item| item.env_var.as_str()).collect();
+            let expired_names: Vec<&str> =
+                expired.iter().map(|item| item.env_var.as_str()).collect();
+            let mut parts = Vec::new();
+            if !missing_names.is_empty() {
+                parts.push(format!("missing: {}", missing_names.join(", ")));
+            }
+            if !expired_names.is_empty() {
+                parts.push(format!("expired: {}", expired_names.join(", ")));
+            }
+            format!(
+                "Project '{}' is NOT ready. {} out of {} required keys have issues. {}",
+                project,
+                missing.len() + expired.len(),
+                required_vars.len(),
+                parts.join("; ")
+            )
+        };
+
+        let next_steps = missing
+            .iter()
+            .map(|item| item.suggestion.clone())
+            .chain(expired.iter().map(|item| {
+                if item.apply_url.is_empty() {
+                    format!("Rotate '{}' - expired key needs replacement", item.name)
+                } else {
+                    format!("Rotate '{}' - renew at {}", item.name, item.apply_url)
+                }
+            }))
+            .collect::<Vec<_>>();
+
+        let summary = if status == "ready" {
+            format!(
+                "All {} required secrets are available and healthy",
+                required_vars.len()
+            )
+        } else if status == "attention" {
+            format!(
+                "All {} required secrets exist, but {} need review",
+                required_vars.len(),
+                attention.len()
+            )
+        } else {
+            format!(
+                "{} missing, {} expired out of {} required",
+                missing.len(),
+                expired.len(),
+                required_vars.len()
+            )
+        };
+
+        let total_required = required_vars.len();
+        Ok(ReadinessReport {
+            project: project.to_string(),
+            mode: if inferred.is_some() {
+                "inferred".to_string()
+            } else {
+                "explicit".to_string()
+            },
+            status,
+            ready: is_ready,
+            summary,
+            required_vars,
+            inference_sources: inferred
+                .as_ref()
+                .map(|requirements| requirements.sources.clone())
+                .unwrap_or_default(),
+            available: available.clone(),
+            attention: attention.clone(),
+            missing: missing.clone(),
+            expired: expired.clone(),
+            actions,
+            human_summary,
+            next_steps,
+            total_required,
+            total_available: available.len() + attention.len(),
+            healthy_count: available.len(),
+            attention_count: attention.len(),
+            missing_count: missing.len(),
+            expired_count: expired.len(),
+        })
     }
 
     pub fn health_report(&self) -> Result<(Vec<SecretEntry>, HealthReport, HealthSummary)> {
@@ -382,7 +968,7 @@ impl<'a> SecretService<'a> {
             source: draft.source,
             environment: draft.environment,
             permission_profile: draft.permission_profile,
-            scopes: vec![],
+            scopes: draft.scopes,
             projects: draft.projects,
             apply_url: draft.apply_url,
             expires_at: draft.expires_at,
@@ -640,6 +1226,34 @@ impl<'a> SecretService<'a> {
         Ok(candidates)
     }
 
+    pub fn scan_and_import_path(&self, request: ScanImportRequest<'_>) -> Result<ScanImportResult> {
+        let candidates = self.scan_path(
+            request.path,
+            request.recursive,
+            request.skip_common,
+            request.new_only,
+        )?;
+
+        let import_stats = if request.apply && !candidates.is_empty() {
+            Some(self.import_path(ImportRequest {
+                path: request.path,
+                provider: request.provider,
+                account_name: request.account_name,
+                project_override: request.project_override,
+                source: request.source,
+                on_conflict: request.on_conflict,
+                recursive: false,
+            })?)
+        } else {
+            None
+        };
+
+        Ok(ScanImportResult {
+            candidates,
+            import_stats,
+        })
+    }
+
     pub fn export_project_env(
         &self,
         project: Option<String>,
@@ -692,6 +1306,160 @@ impl<'a> SecretService<'a> {
         let env_pairs = self.db.get_all_for_env(project.as_deref())?;
         Ok(RunEnvResolution { project, env_pairs })
     }
+}
+
+fn clamp_limit(limit: Option<usize>) -> usize {
+    limit.unwrap_or(20).clamp(1, 100)
+}
+
+fn normalized_offset(offset: Option<usize>) -> usize {
+    offset.unwrap_or(0)
+}
+
+fn paginate_items<T>(items: Vec<T>, limit: Option<usize>, offset: Option<usize>) -> Vec<T> {
+    let offset = normalized_offset(offset);
+    let limit = clamp_limit(limit);
+    items.into_iter().skip(offset).take(limit).collect()
+}
+
+fn rank_entries_for_query(entries: &mut [SecretEntry], query: &str) -> Vec<RankedSecretEntry> {
+    let query = query.trim();
+    let mut scored = entries
+        .iter()
+        .cloned()
+        .map(|entry| {
+            let (score, matched_fields) = score_entry(&entry, query);
+            RankedSecretEntry {
+                entry,
+                relevance_score: score,
+                matched_fields: matched_fields.into_iter().map(str::to_string).collect(),
+            }
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|a, b| {
+        b.relevance_score
+            .cmp(&a.relevance_score)
+            .then_with(|| b.entry.is_active.cmp(&a.entry.is_active))
+            .then_with(|| {
+                a.entry
+                    .metadata_gaps()
+                    .len()
+                    .cmp(&b.entry.metadata_gaps().len())
+            })
+            .then_with(|| a.entry.name.cmp(&b.entry.name))
+    });
+    scored
+}
+
+fn score_entry(entry: &SecretEntry, query: &str) -> (i64, Vec<&'static str>) {
+    let query_lower = query.to_ascii_lowercase();
+    let query_upper = query.to_ascii_uppercase();
+    let mut score = 0;
+    let mut fields = Vec::new();
+
+    let name_lower = entry.name.to_ascii_lowercase();
+    let env_upper = entry.env_var.to_ascii_uppercase();
+    let provider_lower = entry.provider.to_ascii_lowercase();
+    let account_lower = entry.account_name.to_ascii_lowercase();
+    let org_lower = entry.org_name.to_ascii_lowercase();
+    let description_lower = entry.description.to_ascii_lowercase();
+
+    if entry.name == query || name_lower == query_lower {
+        score += 120;
+        fields.push("name");
+    } else if name_lower.contains(&query_lower) {
+        score += 70;
+        fields.push("name");
+    }
+
+    if entry.env_var == query || env_upper == query_upper {
+        score += 140;
+        fields.push("env_var");
+    } else if env_upper.contains(&query_upper) {
+        score += 90;
+        fields.push("env_var");
+    }
+
+    if entry.provider == query || provider_lower == query_lower {
+        score += 80;
+        fields.push("provider");
+    } else if provider_lower.contains(&query_lower) {
+        score += 45;
+        fields.push("provider");
+    }
+
+    if account_lower.contains(&query_lower) {
+        score += 30;
+        fields.push("account_name");
+    }
+    if org_lower.contains(&query_lower) {
+        score += 25;
+        fields.push("org_name");
+    }
+    if description_lower.contains(&query_lower) {
+        score += 20;
+        fields.push("description");
+    }
+    if entry.projects.iter().any(|project| {
+        project.eq_ignore_ascii_case(query) || project.to_ascii_lowercase().contains(&query_lower)
+    }) {
+        score += 55;
+        fields.push("projects");
+    }
+    if entry
+        .scopes
+        .iter()
+        .any(|scope| scope.to_ascii_lowercase().contains(&query_lower))
+    {
+        score += 15;
+        fields.push("scopes");
+    }
+
+    if entry.is_active {
+        score += 5;
+    }
+    if matches!(entry.status(), KeyStatus::Expired) {
+        score -= 15;
+    }
+
+    fields.sort_unstable();
+    fields.dedup();
+    (score, fields)
+}
+
+fn best_entry_for_env_var<'a>(entries: &[&'a SecretEntry]) -> Option<&'a SecretEntry> {
+    entries.iter().copied().max_by(|a, b| {
+        readiness_priority(a)
+            .cmp(&readiness_priority(b))
+            .then_with(|| {
+                b.last_verified_at
+                    .unwrap_or(b.created_at)
+                    .cmp(&a.last_verified_at.unwrap_or(a.created_at))
+            })
+    })
+}
+
+fn readiness_priority(entry: &SecretEntry) -> i32 {
+    match entry.status() {
+        KeyStatus::Active => 5,
+        KeyStatus::ExpiringSoon => 4,
+        KeyStatus::Unknown => 3,
+        KeyStatus::Inactive => 2,
+        KeyStatus::Expired => 1,
+    }
+}
+
+pub fn validate_env_var_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("Environment variable name cannot be empty");
+    }
+    if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        bail!(
+            "Invalid environment variable name '{}': only [A-Za-z0-9_] allowed",
+            name
+        );
+    }
+    Ok(())
 }
 
 pub fn parse_expires(expires: Option<String>) -> Result<Option<DateTime<Utc>>> {

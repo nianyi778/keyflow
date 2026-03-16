@@ -56,7 +56,7 @@ impl ToolRegistry {
                     },
                 ),
                 ToolDefinition::read_with_output(
-                    "get_key_info",
+                    "inspect_key",
                     "Get detailed metadata for one secret by its KeyFlow name.",
                     json!({
                         "type": "object",
@@ -79,7 +79,7 @@ impl ToolRegistry {
                     },
                 ),
                 ToolDefinition::read_with_output(
-                    "list_providers",
+                    "discover_providers",
                     "List all providers currently stored in the vault with key counts.",
                     json!({"type": "object", "properties": {}}),
                     json!({
@@ -102,7 +102,7 @@ impl ToolRegistry {
                     |service, _| service.list_providers(),
                 ),
                 ToolDefinition::read_with_output(
-                    "list_projects",
+                    "discover_projects",
                     "List all projects and the secret names attached to each project.",
                     json!({
                         "type": "object",
@@ -133,7 +133,7 @@ impl ToolRegistry {
                     },
                 ),
                 ToolDefinition::read_with_output(
-                    "check_health",
+                    "maintain_health",
                     "Summarize vault health: expired keys, expiring keys, inactive keys, metadata gaps, duplicates, and verification age.",
                     json!({"type": "object", "properties": {}}),
                     json!({
@@ -268,7 +268,7 @@ impl ToolRegistry {
                     |service, _| service.check_health(),
                 ),
                 ToolDefinition::read_with_output(
-                    "list_keys_for_project",
+                    "discover_project_keys",
                     "List all secrets available to a specific project.",
                     json!({
                         "type": "object",
@@ -306,7 +306,7 @@ impl ToolRegistry {
                     },
                 ),
                 ToolDefinition::write_with_output(
-                    "add_key",
+                    "reuse_add_key",
                     "Store a new secret in KeyFlow. The plaintext value is encrypted immediately.",
                     json!({
                         "type": "object",
@@ -357,7 +357,7 @@ impl ToolRegistry {
                     },
                 ),
                 ToolDefinition::read_with_output(
-                    "get_env_snippet",
+                    "reuse_env_snippet",
                     "Build a .env snippet for a project. Values can be masked or returned as real plaintext.",
                     json!({
                         "type": "object",
@@ -388,7 +388,7 @@ impl ToolRegistry {
                     },
                 ),
                 ToolDefinition::read_with_output(
-                    "discover_project_context",
+                    "discover_project",
                     "Detect project root/name from a path and infer likely required env vars from examples and source references.",
                     json!({
                         "type": "object",
@@ -434,7 +434,7 @@ impl ToolRegistry {
                     },
                 ),
                 ToolDefinition::read_with_output(
-                    "check_project_readiness",
+                    "maintain_project_readiness",
                     "Check whether a project has a complete and healthy set of required env vars.",
                     json!({
                         "type": "object",
@@ -733,15 +733,15 @@ mod tests {
 
         for name in [
             "search_keys",
-            "get_key_info",
-            "list_providers",
-            "list_projects",
-            "check_health",
-            "list_keys_for_project",
-            "add_key",
-            "discover_project_context",
-            "get_env_snippet",
-            "check_project_readiness",
+            "inspect_key",
+            "discover_providers",
+            "discover_projects",
+            "maintain_health",
+            "discover_project_keys",
+            "reuse_add_key",
+            "discover_project",
+            "reuse_env_snippet",
+            "maintain_project_readiness",
         ] {
             let tool = tools
                 .iter()
