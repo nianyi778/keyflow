@@ -5,6 +5,12 @@
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],
   "account_id": "ad48867bb0bbd3ccce8fb30e1ea42a81",
+  "routes": [
+    {
+      "pattern": "keyflow.divinations.top",
+      "custom_domain": true
+    }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
