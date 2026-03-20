@@ -205,52 +205,65 @@ impl Database {
         Ok(entries)
     }
 
-    pub fn get_secret(&self, name: &str) -> Result<SecretEntry> {
+    pub fn get_secrets_by_name(&self, name: &str) -> Result<Vec<SecretEntry>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {} FROM secrets WHERE name = ?1",
             SECRET_COLUMNS
         ))?;
+        let rows = stmt.query_map(params![name], |row| Ok(self.row_to_entry(row)))?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row??);
+        }
+        Ok(entries)
+    }
+
+    pub fn get_secret_by_id(&self, id: &str) -> Result<SecretEntry> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM secrets WHERE id = ?1",
+            SECRET_COLUMNS
+        ))?;
         let entry = stmt
-            .query_row(params![name], |row| Ok(self.row_to_entry(row)))
-            .context(format!("Secret '{name}' not found"))??;
+            .query_row(params![id], |row| Ok(self.row_to_entry(row)))
+            .context(format!("Secret with id '{id}' not found"))??;
         Ok(entry)
     }
 
-    pub fn get_secret_value(&self, name: &str) -> Result<String> {
+    pub fn get_secret_value(&self, id: &str) -> Result<String> {
         let mut stmt = self
             .conn
-            .prepare("SELECT encrypted_value FROM secrets WHERE name = ?1")?;
+            .prepare("SELECT encrypted_value FROM secrets WHERE id = ?1")?;
         let encrypted: Vec<u8> = stmt
-            .query_row(params![name], |row| row.get(0))
-            .context(format!("Secret '{name}' not found"))?;
+            .query_row(params![id], |row| row.get(0))
+            .context(format!("Secret with id '{id}' not found"))?;
 
         self.conn.execute(
-            "UPDATE secrets SET last_used_at = ?1 WHERE name = ?2",
-            params![Utc::now().to_rfc3339(), name],
+            "UPDATE secrets SET last_used_at = ?1 WHERE id = ?2",
+            params![Utc::now().to_rfc3339(), id],
         )?;
 
         let decrypted = self.crypto.decrypt(&encrypted)?;
         String::from_utf8(decrypted).context("Secret value is not valid UTF-8")
     }
 
-    pub fn remove_secret(&self, name: &str) -> Result<bool> {
+    pub fn remove_secret(&self, id: &str) -> Result<bool> {
         let affected = self
             .conn
-            .execute("DELETE FROM secrets WHERE name = ?1", params![name])?;
+            .execute("DELETE FROM secrets WHERE id = ?1", params![id])?;
         Ok(affected > 0)
     }
 
-    pub fn update_secret_value(&self, name: &str, new_value: &str) -> Result<()> {
+    pub fn update_secret_value(&self, id: &str, new_value: &str) -> Result<()> {
         let encrypted = self.crypto.encrypt(new_value.as_bytes())?;
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
-            "UPDATE secrets SET encrypted_value = ?1, updated_at = ?2 WHERE name = ?3",
-            params![encrypted, now, name],
+            "UPDATE secrets SET encrypted_value = ?1, updated_at = ?2 WHERE id = ?3",
+            params![encrypted, now, id],
         )?;
         Ok(())
     }
 
-    pub fn update_secret_metadata(&self, name: &str, update: &MetadataUpdate<'_>) -> Result<()> {
+    pub fn update_secret_metadata(&self, id: &str, update: &MetadataUpdate<'_>) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         let mut set_clauses = vec!["updated_at = ?1".to_string()];
         let mut bind_values: Vec<String> = vec![now];
@@ -303,9 +316,9 @@ impl Database {
             push("permission_profile", v.to_string());
         }
 
-        bind_values.push(name.to_string());
+        bind_values.push(id.to_string());
         let sql = format!(
-            "UPDATE secrets SET {} WHERE name = ?{}",
+            "UPDATE secrets SET {} WHERE id = ?{}",
             set_clauses.join(", "),
             bind_values.len()
         );
@@ -341,7 +354,7 @@ impl Database {
 
     pub fn get_all_for_env(&self, project: Option<&str>) -> Result<Vec<(String, String)>> {
         let mut sql =
-            "SELECT env_var, encrypted_value, name FROM secrets WHERE is_active = 1".to_string();
+            "SELECT env_var, encrypted_value, id FROM secrets WHERE is_active = 1".to_string();
         let mut bind_values: Vec<String> = Vec::new();
 
         if let Some(project) = project {
@@ -373,26 +386,26 @@ impl Database {
 
         let now = Utc::now().to_rfc3339();
         let mut result = Vec::new();
-        let mut names = Vec::new();
+        let mut ids = Vec::new();
         for row in rows {
-            let (env_var, encrypted, name) = row?;
+            let (env_var, encrypted, id) = row?;
             let decrypted = self.crypto.decrypt(&encrypted)?;
             let value = String::from_utf8(decrypted).context("Secret value is not valid UTF-8")?;
             result.push((env_var, value));
-            names.push(name);
+            ids.push(id);
         }
 
         // Batch update last_used_at for all retrieved secrets
-        if !names.is_empty() {
+        if !ids.is_empty() {
             let placeholders: Vec<String> =
-                (1..=names.len()).map(|i| format!("?{}", i + 1)).collect();
+                (1..=ids.len()).map(|i| format!("?{}", i + 1)).collect();
             let update_sql = format!(
-                "UPDATE secrets SET last_used_at = ?1 WHERE name IN ({})",
+                "UPDATE secrets SET last_used_at = ?1 WHERE id IN ({})",
                 placeholders.join(", ")
             );
             let mut update_params: Vec<&dyn rusqlite::types::ToSql> = vec![&now];
-            for name in &names {
-                update_params.push(name);
+            for id in &ids {
+                update_params.push(id);
             }
             self.conn.execute(&update_sql, update_params.as_slice())?;
         }
@@ -400,18 +413,10 @@ impl Database {
         Ok(result)
     }
 
-    pub fn secret_exists(&self, name: &str) -> Result<bool> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT COUNT(*) FROM secrets WHERE name = ?1")?;
-        let count: i64 = stmt.query_row(params![name], |row| row.get(0))?;
-        Ok(count > 0)
-    }
-
     pub fn get_all_raw(&self) -> Result<Vec<(String, Vec<u8>)>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT name, encrypted_value FROM secrets")?;
+            .prepare("SELECT id, encrypted_value FROM secrets")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
         })?;
@@ -429,11 +434,11 @@ impl Database {
 
     pub fn reencrypt_all(&self, pairs: &[(String, Vec<u8>)], new_crypto: &Crypto) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
-        for (name, plaintext) in pairs {
+        for (id, plaintext) in pairs {
             let new_encrypted = new_crypto.encrypt(plaintext)?;
             tx.execute(
-                "UPDATE secrets SET encrypted_value = ?1 WHERE name = ?2",
-                params![new_encrypted, name],
+                "UPDATE secrets SET encrypted_value = ?1 WHERE id = ?2",
+                params![new_encrypted, id],
             )?;
         }
         tx.commit()?;
