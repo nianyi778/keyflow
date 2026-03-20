@@ -1,7 +1,7 @@
 class Keyflow < Formula
   desc "Developer key vault for storing, finding, and reusing API keys"
   homepage "https://github.com/nianyi778/keyflow"
-  version "0.5.0"
+  version "0.6.0"
   license "MIT"
 
   on_macos do
