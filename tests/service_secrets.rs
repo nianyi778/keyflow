@@ -205,3 +205,18 @@ fn create_secret_persists_and_returns_plain_metadata() {
     assert_eq!(loaded.projects, vec!["agent".to_string()]);
     assert_eq!(value, "sk-ant");
 }
+
+#[test]
+fn test_duplicate_name_different_projects() {
+    let (_dir, service) = temp_service();
+
+    service.create_secret(draft("DATABASE_URL", "postgres://clipverse:5432", "custom", &["clipverse"])).unwrap();
+
+    // Should succeed — same name, different project
+    let result = service.create_secret(draft("DATABASE_URL", "postgres://starflix:5432", "custom", &["starflix"]));
+    assert!(result.is_ok(), "Should allow same env_var for different projects");
+
+    // Should fail — same name, overlapping project
+    let result = service.create_secret(draft("DATABASE_URL", "postgres://other:5432", "custom", &["clipverse"]));
+    assert!(result.is_err(), "Should reject same env_var for same project");
+}

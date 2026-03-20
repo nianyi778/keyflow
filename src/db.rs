@@ -38,34 +38,83 @@ impl Database {
         Ok(db)
     }
 
+    fn has_unique_name_constraint(&self) -> bool {
+        let sql: Result<String, _> = self.conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='secrets'",
+            [],
+            |row| row.get(0),
+        );
+        match sql {
+            Ok(ddl) => ddl.contains("name TEXT NOT NULL UNIQUE"),
+            Err(_) => false,
+        }
+    }
+
     fn init_tables(&self) -> Result<()> {
-        self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS secrets (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                env_var TEXT NOT NULL,
-                encrypted_value BLOB NOT NULL,
-                provider TEXT NOT NULL DEFAULT '',
-                account_name TEXT NOT NULL DEFAULT '',
-                description TEXT NOT NULL DEFAULT '',
-                source TEXT NOT NULL DEFAULT '',
-                scopes TEXT NOT NULL DEFAULT '[]',
-                projects TEXT NOT NULL DEFAULT '[]',
-                apply_url TEXT NOT NULL DEFAULT '',
-                expires_at TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                last_used_at TEXT,
-                last_verified_at TEXT,
-                is_active INTEGER NOT NULL DEFAULT 1,
-                org_name TEXT NOT NULL DEFAULT '',
-                environment TEXT NOT NULL DEFAULT '',
-                permission_profile TEXT NOT NULL DEFAULT ''
-            );
-            CREATE INDEX IF NOT EXISTS idx_secrets_env_var ON secrets(env_var);
-            CREATE INDEX IF NOT EXISTS idx_secrets_provider ON secrets(provider);
-            CREATE INDEX IF NOT EXISTS idx_secrets_name ON secrets(name);",
-        )?;
+        // Check if the table already exists with the old UNIQUE constraint on name.
+        // If so, recreate it without the constraint in a transaction (migration).
+        if self.has_unique_name_constraint() {
+            self.conn.execute_batch(
+                "BEGIN;
+                CREATE TABLE secrets_new (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    env_var TEXT NOT NULL,
+                    encrypted_value BLOB NOT NULL,
+                    provider TEXT NOT NULL DEFAULT '',
+                    account_name TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    scopes TEXT NOT NULL DEFAULT '[]',
+                    projects TEXT NOT NULL DEFAULT '[]',
+                    apply_url TEXT NOT NULL DEFAULT '',
+                    expires_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_used_at TEXT,
+                    last_verified_at TEXT,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    org_name TEXT NOT NULL DEFAULT '',
+                    environment TEXT NOT NULL DEFAULT '',
+                    permission_profile TEXT NOT NULL DEFAULT ''
+                );
+                INSERT INTO secrets_new SELECT id, name, env_var, encrypted_value, provider, account_name, description, source, scopes, projects, apply_url, expires_at, created_at, updated_at, last_used_at, last_verified_at, is_active, org_name, environment, permission_profile FROM secrets;
+                DROP TABLE secrets;
+                ALTER TABLE secrets_new RENAME TO secrets;
+                CREATE INDEX IF NOT EXISTS idx_secrets_env_var ON secrets(env_var);
+                CREATE INDEX IF NOT EXISTS idx_secrets_provider ON secrets(provider);
+                CREATE INDEX IF NOT EXISTS idx_secrets_name ON secrets(name);
+                COMMIT;",
+            )?;
+        } else {
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS secrets (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    env_var TEXT NOT NULL,
+                    encrypted_value BLOB NOT NULL,
+                    provider TEXT NOT NULL DEFAULT '',
+                    account_name TEXT NOT NULL DEFAULT '',
+                    description TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    scopes TEXT NOT NULL DEFAULT '[]',
+                    projects TEXT NOT NULL DEFAULT '[]',
+                    apply_url TEXT NOT NULL DEFAULT '',
+                    expires_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_used_at TEXT,
+                    last_verified_at TEXT,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    org_name TEXT NOT NULL DEFAULT '',
+                    environment TEXT NOT NULL DEFAULT '',
+                    permission_profile TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_secrets_env_var ON secrets(env_var);
+                CREATE INDEX IF NOT EXISTS idx_secrets_provider ON secrets(provider);
+                CREATE INDEX IF NOT EXISTS idx_secrets_name ON secrets(name);",
+            )?;
+        }
         Ok(())
     }
 
