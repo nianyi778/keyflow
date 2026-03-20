@@ -33,6 +33,18 @@ kf import ./myapp                                    # Import .env files from a 
 kf health                                            # Check key hygiene
 ```
 
+### Per-Project Keys
+
+Same env var, different projects, different values:
+
+```bash
+kf add DATABASE_URL postgres://dev:5432 --project dev-app
+kf add DATABASE_URL postgres://prod:5432 --project prod-app
+kf get database-url                                  # Interactive picker
+kf get database-url --project dev-app                # Direct access
+kf run --project dev-app -- npm start                # Injects dev-app's keys
+```
+
 > `kf` is a shorthand for `keyflow`. Both work.
 
 ## Screenshots
@@ -94,12 +106,12 @@ kf sync run        # Push and pull
 | `kf init` | Initialize vault |
 | `kf add` | Add a secret |
 | `kf list` | List secrets |
-| `kf get <name>` | Retrieve secret value |
+| `kf get <name> [--project X]` | Retrieve secret value |
 | `kf search <query>` | Search |
 | `kf scan <path>` | Scan .env candidates |
-| `kf update <name>` | Update metadata |
-| `kf verify <name>` | Mark key as still valid |
-| `kf remove <name>` | Delete |
+| `kf update <name> [--project-filter X]` | Update metadata |
+| `kf verify <name> [--project X]` | Mark key as still valid |
+| `kf remove <name> [--project X]` | Delete |
 | `kf run -- <cmd>` | Inject env vars and run |
 | `kf import <path>` | Import .env files |
 | `kf export` | Export .env |

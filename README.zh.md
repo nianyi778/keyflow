@@ -33,6 +33,18 @@ kf import ./myapp                                    # 吸收项目里的 .env
 kf health                                            # 看哪些 key 需要清理
 ```
 
+### 跨项目同名 Key
+
+同一个环境变量，不同项目可以存不同的值：
+
+```bash
+kf add DATABASE_URL postgres://dev:5432 --project dev-app
+kf add DATABASE_URL postgres://prod:5432 --project prod-app
+kf get database-url                                  # 交互选择
+kf get database-url --project dev-app                # 直接拿
+kf run --project dev-app -- npm start                # 只注入 dev-app 的密钥
+```
+
 > `kf` 是 `keyflow` 的短命令，两者等价。
 
 ## 截图
@@ -94,12 +106,12 @@ kf sync run        # 推拉同步
 | `kf init` | 初始化 vault |
 | `kf add` | 新增密钥 |
 | `kf list` | 列出密钥 |
-| `kf get <name>` | 读取密钥值 |
+| `kf get <name> [--project X]` | 读取密钥值 |
 | `kf search <query>` | 搜索 |
 | `kf scan <path>` | 扫描 .env 候选项 |
-| `kf update <name>` | 更新元数据 |
-| `kf verify <name>` | 标记 key 仍有效 |
-| `kf remove <name>` | 删除 |
+| `kf update <name> [--project-filter X]` | 更新元数据 |
+| `kf verify <name> [--project X]` | 标记 key 仍有效 |
+| `kf remove <name> [--project X]` | 删除 |
 | `kf run -- <cmd>` | 注入环境变量运行 |
 | `kf import <path>` | 导入 .env |
 | `kf export` | 导出 .env |
