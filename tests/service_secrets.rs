@@ -2,7 +2,7 @@ use chrono::{Duration, Utc};
 use keyflow::crypto::Crypto;
 use keyflow::db::{Database, MetadataUpdate};
 use keyflow::models::SecretEntry;
-use keyflow::services::secrets::{ImportRequest, SecretDraft, SecretService};
+use keyflow::services::secrets::{ImportRequest, SecretDraft, SecretService, SecretUpdate};
 use tempfile::tempdir;
 
 fn temp_service() -> (tempfile::TempDir, SecretService<'static>) {
@@ -219,4 +219,49 @@ fn test_duplicate_name_different_projects() {
     // Should fail — same name, overlapping project
     let result = service.create_secret(draft("DATABASE_URL", "postgres://other:5432", "custom", &["clipverse"]));
     assert!(result.is_err(), "Should reject same env_var for same project");
+}
+
+#[test]
+fn test_same_name_global_and_scoped() {
+    let (_dir, service) = temp_service();
+
+    // Global key (no projects)
+    service.create_secret(draft("DATABASE_URL", "postgres://global:5432", "custom", &[])).unwrap();
+
+    // Project-scoped key with same env_var — should succeed
+    let result = service.create_secret(draft("DATABASE_URL", "postgres://starflix:5432", "custom", &["starflix"]));
+    assert!(result.is_ok(), "Global and project-scoped keys with same name should coexist");
+
+    // Another global — should fail
+    let result = service.create_secret(draft("DATABASE_URL", "postgres://other:5432", "custom", &[]));
+    assert!(result.is_err(), "Two global keys with same name should conflict");
+}
+
+#[test]
+fn test_get_entries_by_name_returns_all() {
+    let (_dir, service) = temp_service();
+
+    service.create_secret(draft("DATABASE_URL", "postgres://a:5432", "custom", &["project-a"])).unwrap();
+    service.create_secret(draft("DATABASE_URL", "postgres://b:5432", "custom", &["project-b"])).unwrap();
+
+    let entries = service.get_entries_by_name("database-url").unwrap();
+    assert_eq!(entries.len(), 2, "Should return both entries with same name");
+}
+
+#[test]
+fn test_scoped_update_by_id() {
+    let (_dir, service) = temp_service();
+
+    let entry_a = service.create_secret(draft("DATABASE_URL", "postgres://a:5432", "custom", &["project-a"])).unwrap();
+    let _entry_b = service.create_secret(draft("DATABASE_URL", "postgres://b:5432", "custom", &["project-b"])).unwrap();
+
+    // Update only entry_a by id
+    service.update_secret(&entry_a.id, SecretUpdate {
+        description: Some("Updated".to_string()),
+        ..Default::default()
+    }).unwrap();
+
+    // Verify only entry_a was updated
+    let updated = service.get_entry_by_id(&entry_a.id).unwrap();
+    assert_eq!(updated.description, "Updated");
 }

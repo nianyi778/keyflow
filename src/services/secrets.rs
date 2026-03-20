@@ -81,6 +81,7 @@ pub struct SecretDraft {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Default)]
 pub struct SecretUpdate {
     pub value: Option<String>,
     pub provider: Option<String>,

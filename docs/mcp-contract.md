@@ -190,15 +190,19 @@ Key outputs:
 
 Purpose:
 
-- fetch detailed metadata for one secret by KeyFlow name
+- fetch metadata for secrets by KeyFlow name
 
 Input:
 
-- `name`
+- `name` (required)
+- `project` (optional) — filter by project
 
 Output:
 
-- one metadata object
+- `keys` — array of metadata objects
+- `count` — number of results
+
+> **Breaking change (v0.5.0→v0.6.0):** Response changed from single object to `{ keys: [...], count: N }`.
 
 ### reuse
 
