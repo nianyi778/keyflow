@@ -80,7 +80,7 @@ fn health_view_returns_structured_buckets() {
     service
         .db()
         .update_secret_metadata(
-            &expired.name,
+            &expired.id,
             &MetadataUpdate {
                 expires_at: Some(Some(Utc::now() - Duration::days(1))),
                 last_verified_at: Some(Some(Utc::now() - Duration::days(120))),
@@ -91,7 +91,7 @@ fn health_view_returns_structured_buckets() {
     service
         .db()
         .update_secret_metadata(
-            &expiring.name,
+            &expiring.id,
             &MetadataUpdate {
                 expires_at: Some(Some(Utc::now() + Duration::days(3))),
                 last_verified_at: Some(Some(Utc::now() - Duration::days(45))),
@@ -102,7 +102,7 @@ fn health_view_returns_structured_buckets() {
     service
         .db()
         .update_secret_metadata(
-            &duplicate.name,
+            &duplicate.id,
             &MetadataUpdate {
                 last_verified_at: Some(Some(Utc::now() - Duration::days(75))),
                 ..Default::default()
@@ -112,7 +112,7 @@ fn health_view_returns_structured_buckets() {
     service
         .db()
         .update_secret_metadata(
-            &inactive.name,
+            &inactive.id,
             &MetadataUpdate {
                 is_active: Some(false),
                 last_verified_at: Some(Some(Utc::now() - Duration::days(100))),
@@ -198,8 +198,8 @@ fn create_secret_persists_and_returns_plain_metadata() {
         ))
         .unwrap();
 
-    let loaded: SecretEntry = service.get_entry(&entry.name).unwrap();
-    let value = service.get_secret_value(&entry.name).unwrap();
+    let loaded: SecretEntry = service.get_entry_by_id(&entry.id).unwrap();
+    let value = service.get_secret_value(&entry.id).unwrap();
 
     assert_eq!(loaded.env_var, "ANTHROPIC_API_KEY");
     assert_eq!(loaded.projects, vec!["agent".to_string()]);

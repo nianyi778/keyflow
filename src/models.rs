@@ -160,10 +160,32 @@ pub fn find_duplicate_groups(entries: &[SecretEntry]) -> Vec<DuplicateGroup> {
 
     let mut groups = Vec::new();
     for (env_var, keys) in &by_env_var {
-        if keys.len() > 1 {
+        if keys.len() <= 1 {
+            continue;
+        }
+        // Only group keys whose projects overlap (or both are global)
+        let mut overlapping: Vec<&str> = Vec::new();
+        for (i, a) in keys.iter().enumerate() {
+            for b in keys.iter().skip(i + 1) {
+                let overlap = if a.projects.is_empty() && b.projects.is_empty() {
+                    true
+                } else {
+                    a.projects.iter().any(|p| b.projects.contains(p))
+                };
+                if overlap {
+                    if !overlapping.contains(&a.name.as_str()) {
+                        overlapping.push(&a.name);
+                    }
+                    if !overlapping.contains(&b.name.as_str()) {
+                        overlapping.push(&b.name);
+                    }
+                }
+            }
+        }
+        if overlapping.len() > 1 {
             groups.push(DuplicateGroup {
                 env_var: env_var.clone(),
-                names: keys.iter().map(|key| key.name.clone()).collect(),
+                names: overlapping.into_iter().map(|s| s.to_string()).collect(),
             });
         }
     }
@@ -195,17 +217,52 @@ pub fn find_duplicate_groups(entries: &[SecretEntry]) -> Vec<DuplicateGroup> {
             seen_purposes.entry(purpose).or_default().push(&key.name);
         }
 
-        for names in seen_purposes.values() {
-            if names.len() > 1 {
+        for (purpose_key, purpose_names) in &seen_purposes {
+            if purpose_names.len() <= 1 {
+                continue;
+            }
+            // Resolve entries for project-overlap check
+            let purpose_entries: Vec<&SecretEntry> = keys
+                .iter()
+                .copied()
+                .filter(|e| {
+                    let p = e
+                        .env_var
+                        .to_uppercase()
+                        .replace(&provider.to_uppercase(), "");
+                    let p = p.trim_matches('_').to_string();
+                    &p == purpose_key
+                })
+                .collect();
+            // Only flag as duplicate when projects overlap (or both global)
+            let mut overlapping: Vec<&str> = Vec::new();
+            for (i, a) in purpose_entries.iter().enumerate() {
+                for b in purpose_entries.iter().skip(i + 1) {
+                    let overlap = if a.projects.is_empty() && b.projects.is_empty() {
+                        true
+                    } else {
+                        a.projects.iter().any(|p| b.projects.contains(p))
+                    };
+                    if overlap {
+                        if !overlapping.contains(&a.name.as_str()) {
+                            overlapping.push(&a.name);
+                        }
+                        if !overlapping.contains(&b.name.as_str()) {
+                            overlapping.push(&b.name);
+                        }
+                    }
+                }
+            }
+            if overlapping.len() > 1 {
                 let already_in = groups.iter().any(|group| {
-                    names
+                    overlapping
                         .iter()
                         .all(|name| group.names.contains(&name.to_string()))
                 });
                 if !already_in {
                     groups.push(DuplicateGroup {
                         env_var: format!("{provider}:overlap"),
-                        names: names.iter().map(|name| name.to_string()).collect(),
+                        names: overlapping.into_iter().map(|s| s.to_string()).collect(),
                     });
                 }
             }

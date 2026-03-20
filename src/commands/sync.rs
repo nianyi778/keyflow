@@ -212,14 +212,24 @@ fn parse_count(value: Option<&serde_json::Value>, fallback: usize) -> usize {
     fallback
 }
 
-fn ensure_unique_name(db: &Database, base: &str) -> Result<String> {
-    if !db.secret_exists(base)? {
+fn ensure_unique_name(db: &Database, base: &str, projects: &[String]) -> Result<String> {
+    let existing = db.get_secrets_by_name(base)?;
+    let has_overlap = existing.iter().any(|e| {
+        projects.iter().any(|p| e.projects.contains(p))
+            || (projects.is_empty() && e.projects.is_empty())
+    });
+    if !has_overlap {
         return Ok(base.to_string());
     }
     let mut suffix = 2usize;
     loop {
         let candidate = format!("{base}-sync-{suffix}");
-        if !db.secret_exists(&candidate)? {
+        let existing = db.get_secrets_by_name(&candidate)?;
+        let has_overlap = existing.iter().any(|e| {
+            projects.iter().any(|p| e.projects.contains(p))
+                || (projects.is_empty() && e.projects.is_empty())
+        });
+        if !has_overlap {
             return Ok(candidate);
         }
         suffix += 1;
@@ -571,8 +581,8 @@ fn cmd_sync_pull() -> Result<()> {
         }
 
         let mut entry = to_secret_entry(&remote_entry)?;
-        if db.secret_exists(&entry.name)? {
-            let unique = ensure_unique_name(db, &entry.name)?;
+        if !db.get_secrets_by_name(&entry.name)?.is_empty() {
+            let unique = ensure_unique_name(db, &entry.name, &entry.projects)?;
             entry.name = unique;
         }
         db.add_secret(&entry, &remote_entry.value)?;

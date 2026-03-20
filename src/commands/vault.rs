@@ -214,7 +214,7 @@ pub fn cmd_backup(output: Option<String>) -> Result<()> {
 
     let mut backup_data: Vec<serde_json::Value> = Vec::new();
     for entry in &entries {
-        let value = db.get_secret_value(&entry.name)?;
+        let value = db.get_secret_value(&entry.id)?;
         let mut obj = serde_json::to_value(entry)?;
         obj.as_object_mut()
             .unwrap()
