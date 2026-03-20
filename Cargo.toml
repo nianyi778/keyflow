@@ -1,6 +1,6 @@
 [package]
 name = "keyflow"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "Developer key vault for storing, finding, and reusing API keys across projects"
 license = "MIT"
