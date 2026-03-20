@@ -339,27 +339,27 @@ impl<'a> SecretService<'a> {
         self.db.list_secrets(filter)
     }
 
-    pub fn get_entry(&self, name: &str) -> Result<SecretEntry> {
-        self.db.get_secret(name)
+    pub fn get_entry_by_id(&self, id: &str) -> Result<SecretEntry> {
+        self.db.get_secret_by_id(id)
     }
 
-    pub fn get_secret_value(&self, name: &str) -> Result<String> {
-        self.db.get_secret_value(name)
+    pub fn get_entries_by_name(&self, name: &str) -> Result<Vec<SecretEntry>> {
+        self.db.get_secrets_by_name(name)
     }
 
-    pub fn inspect_secret(&self, name: &str) -> Result<SecretValueView> {
+    pub fn get_secret_value(&self, id: &str) -> Result<String> {
+        self.db.get_secret_value(id)
+    }
+
+    pub fn inspect_secret_by_id(&self, id: &str) -> Result<SecretValueView> {
         Ok(SecretValueView {
-            entry: self.get_entry(name)?,
-            value: self.get_secret_value(name)?,
+            entry: self.get_entry_by_id(id)?,
+            value: self.get_secret_value(id)?,
         })
     }
 
-    pub fn remove_secret(&self, name: &str) -> Result<bool> {
-        self.db.remove_secret(name)
-    }
-
-    pub fn secret_exists(&self, name: &str) -> Result<bool> {
-        self.db.secret_exists(name)
+    pub fn remove_secret(&self, id: &str) -> Result<bool> {
+        self.db.remove_secret(id)
     }
 
     pub fn search_entries(&self, query: &str) -> Result<Vec<SecretEntry>> {
@@ -888,9 +888,9 @@ impl<'a> SecretService<'a> {
         })
     }
 
-    pub fn update_secret(&self, name: &str, update: SecretUpdate) -> Result<()> {
+    pub fn update_secret(&self, id: &str, update: SecretUpdate) -> Result<()> {
         if let Some(value) = update.value {
-            self.db.update_secret_value(name, &value)?;
+            self.db.update_secret_value(id, &value)?;
         }
 
         let last_verified_at = if update.verify {
@@ -900,7 +900,7 @@ impl<'a> SecretService<'a> {
         };
 
         self.db.update_secret_metadata(
-            name,
+            id,
             &MetadataUpdate {
                 provider: update.provider.as_deref(),
                 account_name: update.account_name.as_deref(),
@@ -924,13 +924,16 @@ impl<'a> SecretService<'a> {
     pub fn verify_names(&self, names: &[String]) -> Result<DateTime<Utc>> {
         let now = Utc::now();
         for name in names {
-            self.db.update_secret_metadata(
-                name,
-                &MetadataUpdate {
-                    last_verified_at: Some(Some(now)),
-                    ..Default::default()
-                },
-            )?;
+            let entries = self.db.get_secrets_by_name(name)?;
+            for entry in entries {
+                self.db.update_secret_metadata(
+                    &entry.id,
+                    &MetadataUpdate {
+                        last_verified_at: Some(Some(now)),
+                        ..Default::default()
+                    },
+                )?;
+            }
         }
         Ok(now)
     }
@@ -948,12 +951,28 @@ impl<'a> SecretService<'a> {
 
     pub fn create_secret(&self, draft: SecretDraft) -> Result<SecretEntry> {
         let name = draft.env_var.to_lowercase().replace('_', "-");
-        if self.db.secret_exists(&name)? {
-            bail!(
-                "Secret '{}' already exists. Use 'kf update {}' to modify.",
-                name,
-                name
-            );
+
+        let existing = self.db.get_secrets_by_name(&name)?;
+        if draft.projects.is_empty() {
+            if existing.iter().any(|e| e.projects.is_empty()) {
+                bail!(
+                    "Secret '{}' already exists as a global key. Use 'kf update {}' to modify.",
+                    name,
+                    name
+                );
+            }
+        } else {
+            for entry in &existing {
+                for project in &draft.projects {
+                    if entry.projects.contains(project) {
+                        bail!(
+                            "Secret '{}' already exists for project '{}'. Use 'kf update' to modify.",
+                            name,
+                            project
+                        );
+                    }
+                }
+            }
         }
 
         let now = Utc::now();
@@ -1107,16 +1126,22 @@ impl<'a> SecretService<'a> {
             }
 
             let mut name = key.to_lowercase().replace('_', "-");
-            if self.db.secret_exists(&name)? {
+            let existing = self.db.get_secrets_by_name(&name)?;
+            let conflict = existing.iter().find(|e| {
+                projects.iter().any(|p| e.projects.contains(p))
+                    || (projects.is_empty() && e.projects.is_empty())
+            });
+
+            if let Some(conflicting) = conflict {
                 match on_conflict {
                     "skip" => {
                         stats.skipped += 1;
                         continue;
                     }
                     "overwrite" => {
-                        self.db.update_secret_value(&name, val)?;
+                        self.db.update_secret_value(&conflicting.id, val)?;
                         self.db.update_secret_metadata(
-                            &name,
+                            &conflicting.id,
                             &MetadataUpdate {
                                 provider: Some(provider),
                                 account_name: Some(account_name),
@@ -1140,7 +1165,7 @@ impl<'a> SecretService<'a> {
                         let mut suffix = 2;
                         loop {
                             let candidate = format!("{}-{}", name, suffix);
-                            if !self.db.secret_exists(&candidate)? {
+                            if self.db.get_secrets_by_name(&candidate)?.is_empty() {
                                 name = candidate;
                                 break;
                             }
@@ -1210,7 +1235,7 @@ impl<'a> SecretService<'a> {
                 }
                 if new_only {
                     let name = env_var.to_lowercase().replace('_', "-");
-                    if self.db.secret_exists(&name)? {
+                    if !self.db.get_secrets_by_name(&name)?.is_empty() {
                         continue;
                     }
                 }
@@ -1285,7 +1310,7 @@ impl<'a> SecretService<'a> {
             lines.push(format!(
                 "{}={}",
                 entry.env_var,
-                self.db.get_secret_value(&entry.name)?
+                self.db.get_secret_value(&entry.id)?
             ));
         }
 

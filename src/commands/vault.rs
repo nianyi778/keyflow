@@ -320,7 +320,7 @@ pub fn cmd_restore(file: &str, passphrase_arg: Option<String>) -> Result<()> {
             continue;
         }
 
-        if db.secret_exists(name)? {
+        if !db.get_secrets_by_name(name)?.is_empty() {
             println!("{} Skipping '{}' (already exists)", style("⊘").dim(), name);
             skipped += 1;
             continue;
