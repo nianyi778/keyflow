@@ -200,9 +200,17 @@ impl<'a> VaultService<'a> {
         }))
     }
 
-    pub fn get_key_info(&self, name: String) -> Result<Value> {
-        let entry = self.secrets.get_entry(&name)?;
-        Ok(models::secret_to_json(&entry))
+    pub fn get_key_info(&self, name: String, project: Option<String>) -> Result<Value> {
+        let mut entries = self.secrets.get_entries_by_name(&name)?;
+        if let Some(proj) = &project {
+            entries.retain(|e| e.projects.iter().any(|p| p == proj));
+        }
+        if entries.is_empty() {
+            bail!("Secret '{}' not found", name);
+        }
+        let keys: Vec<Value> = entries.iter().map(|e| models::secret_to_json(e)).collect();
+        let count = keys.len();
+        Ok(json!({ "keys": keys, "count": count }))
     }
 
     pub fn list_providers(&self) -> Result<Value> {
@@ -355,7 +363,7 @@ impl<'a> VaultService<'a> {
             let value = if filter.mask_values {
                 "***".to_string()
             } else {
-                self.secrets.get_secret_value(&entry.name)?
+                self.secrets.get_secret_value(&entry.id)?
             };
             lines.push(format!("{}={}", entry.env_var, value));
             keys.push(json!({

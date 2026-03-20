@@ -64,18 +64,33 @@ impl ToolRegistry {
                             "name": {
                                 "type": "string",
                                 "description": "Secret name returned by search_keys."
+                            },
+                            "project": {
+                                "type": "string",
+                                "description": "Optional project to filter results to a specific project scope."
                             }
                         },
                         "required": ["name"]
                     }),
-                    key_metadata_schema(),
+                    json!({
+                        "type": "object",
+                        "properties": {
+                            "keys": {
+                                "type": "array",
+                                "items": key_metadata_schema()
+                            },
+                            "count": { "type": "integer" }
+                        },
+                        "required": ["keys", "count"]
+                    }),
                     |service, args| {
                         #[derive(serde::Deserialize)]
                         struct Args {
                             name: String,
+                            project: Option<String>,
                         }
                         let args: Args = parse_args(args)?;
-                        service.get_key_info(args.name)
+                        service.get_key_info(args.name, args.project)
                     },
                 ),
                 ToolDefinition::read_with_output(
