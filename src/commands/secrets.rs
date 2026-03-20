@@ -7,7 +7,7 @@ use std::fs;
 use std::io::IsTerminal;
 use std::path::Path;
 
-use crate::commands::auth::{open_db, select_secret};
+use crate::commands::auth::{open_db, resolve_secret};
 use crate::commands::helpers::{detect_project_name, get_default_url, parse_csv, PROVIDERS};
 use crate::models::{KeyStatus, ListFilter};
 use crate::services::secrets::{
@@ -61,6 +61,7 @@ pub struct UpdateArgs {
     pub expires: Option<String>,
     pub active: Option<bool>,
     pub verify: bool,
+    pub project_filter: Option<String>,
 }
 
 pub fn cmd_add(args: AddArgs) -> Result<()> {
@@ -295,13 +296,10 @@ pub fn cmd_list(
     Ok(())
 }
 
-pub fn cmd_get(name: Option<String>, raw: bool, copy: bool) -> Result<()> {
+pub fn cmd_get(name: Option<String>, raw: bool, copy: bool, project: Option<String>) -> Result<()> {
     let service = SecretService::new(open_db()?);
-    let name = match name {
-        Some(n) => n,
-        None => select_secret(&service)?,
-    };
-    let view = service.inspect_secret(&name)?;
+    let entry = resolve_secret(&service, name, project.as_deref())?;
+    let view = service.inspect_secret_by_id(&entry.id)?;
 
     if copy {
         let mut child = std::process::Command::new("pbcopy")
@@ -389,26 +387,18 @@ pub fn cmd_get(name: Option<String>, raw: bool, copy: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn cmd_remove(name: Option<String>, force: bool, purge: bool) -> Result<()> {
+pub fn cmd_remove(name: Option<String>, force: bool, purge: bool, project: Option<String>) -> Result<()> {
     let service = SecretService::new(open_db()?);
-    let name = match name {
-        Some(n) => {
-            if !service.secret_exists(&n)? {
-                bail!("Secret '{}' not found", n);
-            }
-            n
-        }
-        None => select_secret(&service)?,
-    };
+    let entry = resolve_secret(&service, name, project.as_deref())?;
 
     if !force {
         let prompt = if purge {
             format!(
                 "Permanently delete secret '{}'? This cannot be undone.",
-                name
+                entry.name
             )
         } else {
-            format!("Deactivate secret '{}{}'", name, '?')
+            format!("Deactivate secret '{}{}'", entry.name, '?')
         };
         let confirmed = Confirm::new()
             .with_prompt(prompt)
@@ -421,15 +411,15 @@ pub fn cmd_remove(name: Option<String>, force: bool, purge: bool) -> Result<()> 
     }
 
     if purge {
-        service.remove_secret(&name)?;
+        service.remove_secret(&entry.id)?;
         println!(
             "{} Secret '{}' permanently deleted",
             style("✓").green().bold(),
-            name
+            entry.name
         );
     } else {
         service.update_secret(
-            &name,
+            &entry.id,
             SecretUpdate {
                 value: None,
                 provider: None,
@@ -450,15 +440,15 @@ pub fn cmd_remove(name: Option<String>, force: bool, purge: bool) -> Result<()> 
         println!(
             "{} Secret '{}' deactivated",
             style("✓").green().bold(),
-            name
+            entry.name
         );
         println!(
             "  Restore with: {}",
-            style(format!("kf update {} --active true", name)).cyan()
+            style(format!("kf update {} --active true", entry.name)).cyan()
         );
         println!(
             "  Permanently delete with: {}",
-            style(format!("kf remove {} --purge", name)).cyan()
+            style(format!("kf remove {} --purge", entry.name)).cyan()
         );
     }
 
@@ -482,23 +472,16 @@ pub fn cmd_update(args: UpdateArgs) -> Result<()> {
         expires,
         active,
         verify,
+        project_filter,
     } = args;
     let service = SecretService::new(open_db()?);
-    let name = match name {
-        Some(n) => {
-            if !service.secret_exists(&n)? {
-                bail!("Secret '{}' not found", n);
-            }
-            n
-        }
-        None => select_secret(&service)?,
-    };
+    let entry = resolve_secret(&service, name, project_filter.as_deref())?;
 
     let scopes_vec = scopes.map(|s| parse_csv(&s));
     let projects_vec = projects.map(|p| parse_csv(&p));
     let had_value_update = value.is_some();
     service.update_secret(
-        &name,
+        &entry.id,
         SecretUpdate {
             value,
             provider,
@@ -521,25 +504,25 @@ pub fn cmd_update(args: UpdateArgs) -> Result<()> {
         println!(
             "{} Secret value verified and metadata updated for '{}'",
             style("✓").green().bold(),
-            name
+            entry.name
         );
     } else if verify {
         println!(
             "{} Verified and metadata updated for '{}'",
             style("✓").green().bold(),
-            name
+            entry.name
         );
     } else if had_value_update {
         println!(
             "{} Secret value and metadata updated for '{}'",
             style("✓").green().bold(),
-            name
+            entry.name
         );
     } else {
         println!(
             "{} Metadata updated for '{}'",
             style("✓").green().bold(),
-            name
+            entry.name
         );
     }
     Ok(())
@@ -1004,23 +987,46 @@ pub fn cmd_health(verbose: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn cmd_verify(name: Option<String>, all: bool) -> Result<()> {
+pub fn cmd_verify(name: Option<String>, all: bool, project: Option<String>) -> Result<()> {
     let service = SecretService::new(open_db()?);
-    let names = if all {
-        service.all_secret_names(true)?
-    } else {
-        vec![match name {
-            Some(name) => name,
-            None => select_secret(&service)?,
-        }]
-    };
 
-    let now = service.verify_names(&names)?;
-    for name in &names {
+    if all {
+        let names = service.all_secret_names(true)?;
+        let now = service.verify_names(&names)?;
+        for n in &names {
+            println!(
+                "{} Verified '{}' at {}",
+                style("✓").green().bold(),
+                style(n).cyan(),
+                style(now.format("%Y-%m-%d").to_string()).green()
+            );
+        }
+    } else {
+        let entry = resolve_secret(&service, name, project.as_deref())?;
+        let now = Utc::now();
+        service.update_secret(
+            &entry.id,
+            SecretUpdate {
+                value: None,
+                provider: None,
+                account_name: None,
+                org_name: None,
+                description: None,
+                source: None,
+                environment: None,
+                permission_profile: None,
+                scopes: None,
+                projects: None,
+                apply_url: None,
+                expires_at: None,
+                active: None,
+                verify: true,
+            },
+        )?;
         println!(
             "{} Verified '{}' at {}",
             style("✓").green().bold(),
-            style(name).cyan(),
+            style(&entry.name).cyan(),
             style(now.format("%Y-%m-%d").to_string()).green()
         );
     }

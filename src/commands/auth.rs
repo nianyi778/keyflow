@@ -6,7 +6,7 @@ use std::io::IsTerminal;
 
 use crate::crypto::Crypto;
 use crate::db::Database;
-use crate::models::{AppConfig, ListFilter};
+use crate::models::{AppConfig, ListFilter, SecretEntry};
 use crate::paths;
 use crate::services::secrets::SecretService;
 
@@ -160,19 +160,78 @@ pub fn open_db() -> Result<Database> {
     Database::open(db_path.to_str().unwrap(), crypto)
 }
 
-pub(crate) fn select_secret(service: &SecretService<'_>) -> Result<String> {
-    let entries = service.list_entries(&ListFilter::default())?;
+pub(crate) fn resolve_secret(
+    service: &SecretService<'_>,
+    name: Option<String>,
+    project: Option<&str>,
+) -> Result<SecretEntry> {
+    let name = match name {
+        Some(n) => n,
+        None => return select_secret_entry(service, project),
+    };
+
+    let mut entries = service.get_entries_by_name(&name)?;
+    if entries.is_empty() {
+        bail!("Secret '{}' not found", name);
+    }
+
+    if let Some(proj) = project {
+        entries.retain(|e| e.projects.iter().any(|p| p == proj));
+        if entries.is_empty() {
+            bail!("Secret '{}' not found in project '{}'", name, proj);
+        }
+    }
+
+    if entries.len() == 1 {
+        return Ok(entries.remove(0));
+    }
+
+    // Multiple matches — interactive picker
+    let items: Vec<String> = entries
+        .iter()
+        .map(|e| {
+            let projects = if e.projects.is_empty() {
+                "(global)".to_string()
+            } else {
+                format!("({})", e.projects.join(", "))
+            };
+            format!("{:<28} {:<20} {:<16} {:?}", e.name, projects, e.provider, e.status())
+        })
+        .collect();
+
+    let idx = FuzzySelect::new()
+        .with_prompt(format!("Multiple secrets named '{}' — select one", name))
+        .items(&items)
+        .default(0)
+        .interact()?;
+
+    Ok(entries.remove(idx))
+}
+
+fn select_secret_entry(service: &SecretService<'_>, project: Option<&str>) -> Result<SecretEntry> {
+    let filter = ListFilter {
+        project: project.map(|s| s.to_string()),
+        ..Default::default()
+    };
+    let entries = service.list_entries(&filter)?;
     if entries.is_empty() {
         bail!("No secrets found. Add one with: kf add");
     }
     let items: Vec<String> = entries
         .iter()
-        .map(|e| format!("{:<28} {:<24} {}", e.name, e.env_var, e.provider))
+        .map(|e| {
+            let projects = if e.projects.is_empty() {
+                "(global)".to_string()
+            } else {
+                format!("({})", e.projects.join(", "))
+            };
+            format!("{:<28} {:<20} {:<24} {}", e.name, projects, e.env_var, e.provider)
+        })
         .collect();
     let idx = FuzzySelect::new()
         .with_prompt("Select secret (type to filter)")
         .items(&items)
         .default(0)
         .interact()?;
-    Ok(entries[idx].name.clone())
+    Ok(entries[idx].clone())
 }

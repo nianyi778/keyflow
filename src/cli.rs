@@ -111,6 +111,9 @@ pub enum Commands {
         /// Copy value to clipboard
         #[arg(short, long)]
         copy: bool,
+        /// Filter by project (disambiguates duplicate names)
+        #[arg(short, long)]
+        project: Option<String>,
     },
 
     /// Remove a secret: `kf remove` to select, or `kf remove <name>`
@@ -123,6 +126,9 @@ pub enum Commands {
         /// Permanently delete (default: deactivate only)
         #[arg(long)]
         purge: bool,
+        /// Filter by project (disambiguates duplicate names)
+        #[arg(short = 'P', long)]
+        project: Option<String>,
     },
 
     /// Update a secret: `kf update` to select, or `kf update <name>`
@@ -171,6 +177,9 @@ pub enum Commands {
         /// Mark this key as verified now (updates last_verified_at)
         #[arg(long)]
         verify: bool,
+        /// Filter by project to select which secret to update (when duplicate names exist)
+        #[arg(short = 'P', long = "project-filter")]
+        project_filter: Option<String>,
     },
 
     /// Run a command with secrets injected: `kf run -- npm start`
@@ -240,6 +249,9 @@ pub enum Commands {
         /// Verify all secrets
         #[arg(long)]
         all: bool,
+        /// Filter by project (disambiguates duplicate names)
+        #[arg(short, long)]
+        project: Option<String>,
     },
 
     /// Search secrets by keyword: `kf search` to type interactively

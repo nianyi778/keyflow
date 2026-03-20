@@ -60,8 +60,8 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             expiring,
             inactive,
         } => commands::cmd_list(provider, project, expiring, inactive),
-        Commands::Get { name, raw, copy } => commands::cmd_get(name, raw, copy),
-        Commands::Remove { name, force, purge } => commands::cmd_remove(name, force, purge),
+        Commands::Get { name, raw, copy, project } => commands::cmd_get(name, raw, copy, project),
+        Commands::Remove { name, force, purge, project } => commands::cmd_remove(name, force, purge, project),
         Commands::Update {
             name,
             value,
@@ -78,6 +78,7 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             expires,
             active,
             verify,
+            project_filter,
         } => commands::cmd_update(commands::UpdateArgs {
             name,
             value,
@@ -94,6 +95,7 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             expires,
             active,
             verify,
+            project_filter,
         }),
         Commands::Run {
             project,
@@ -116,7 +118,7 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             output,
         } => commands::cmd_export(project, environment, output),
         Commands::Health { verbose } => commands::cmd_health(verbose),
-        Commands::Verify { name, all } => commands::cmd_verify(name, all),
+        Commands::Verify { name, all, project } => commands::cmd_verify(name, all, project),
         Commands::Search { query } => commands::cmd_search(query),
         Commands::Scan {
             path,
