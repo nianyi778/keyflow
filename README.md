@@ -100,6 +100,8 @@ kf sync push       # Push local changes
 kf sync pull       # Pull remote changes
 kf sync run        # Bidirectional sync (pull then push)
 kf sync status     # Show sync status
+kf sync deploy     # Deploy sync worker to Cloudflare
+kf sync disconnect # Disconnect from sync
 ```
 
 ## Commands

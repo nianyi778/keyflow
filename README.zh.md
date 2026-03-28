@@ -100,6 +100,8 @@ kf sync push       # 推送本地变更
 kf sync pull       # 拉取远端变更
 kf sync run        # 双向同步（先拉后推）
 kf sync status     # 查看同步状态
+kf sync deploy     # 部署同步 Worker 到 Cloudflare
+kf sync disconnect # 断开云同步
 ```
 
 ## 命令速查
