@@ -38,8 +38,8 @@ kf health                                            # Check key hygiene
 Same env var, different projects, different values:
 
 ```bash
-kf add DATABASE_URL postgres://dev:5432 --project dev-app
-kf add DATABASE_URL postgres://prod:5432 --project prod-app
+kf add DATABASE_URL postgres://dev:5432 --projects dev-app
+kf add DATABASE_URL postgres://prod:5432 --projects prod-app
 kf get database-url                                  # Interactive picker
 kf get database-url --project dev-app                # Direct access
 kf run --project dev-app -- npm start                # Injects dev-app's keys
@@ -96,7 +96,10 @@ End-to-end encrypted sync. The server never sees plaintext:
 
 ```bash
 kf sync init       # Register and bind to cloud
-kf sync run        # Push and pull
+kf sync push       # Push local changes
+kf sync pull       # Pull remote changes
+kf sync run        # Bidirectional sync (pull then push)
+kf sync status     # Show sync status
 ```
 
 ## Commands
@@ -117,10 +120,12 @@ kf sync run        # Push and pull
 | `kf export` | Export .env |
 | `kf health` | Health check |
 | `kf setup` | Configure AI integration |
+| `kf serve` | Start MCP server |
 | `kf sync` | Cloud sync |
 | `kf backup` / `kf restore` | Backup / restore |
 | `kf passwd` | Change master password |
 | `kf lock` | Lock vault |
+| `kf completions <shell>` | Generate shell completions |
 
 ## Security
 
