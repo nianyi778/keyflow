@@ -7,18 +7,18 @@ class Keyflow < Formula
   on_macos do
     on_arm do
       url "https://github.com/nianyi778/keyflow/releases/download/v#{version}/keyflow-aarch64-apple-darwin.tar.gz"
-      sha256 "66b94b6b00853b0b08ffa2f03f61acf0e318837ec18385af64762a62d52cd4ad"
+      sha256 "ea43f343c8b294c005fbe1aaa8ac5c195f7b6894bbaaf13cf8f3ba880d05b5c1"
     end
     on_intel do
       url "https://github.com/nianyi778/keyflow/releases/download/v#{version}/keyflow-x86_64-apple-darwin.tar.gz"
-      sha256 "7908a9e15eb8de46c4d6beb8c689a6b9009050df089ee1490e2103d84174cf20"
+      sha256 "ef3f46d0b1902bf00d1cbef39ae117c1d35caa6a26c8cdaa56f13802cbadf9e3"
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/nianyi778/keyflow/releases/download/v#{version}/keyflow-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "d274ee03c9e2064b9e789146b4f605a743bc7a10f119da216aeeb63e6f357231"
+      sha256 "1967cd46d90ecd6b1cc3a7ce296b67b6ff3384764a7f2f4c8f9adb09c521900a"
     end
   end
 
