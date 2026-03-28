@@ -2,8 +2,9 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 
 use super::service::{
-    parse_args, AddKeyRequest, DiscoverProjectRequest, EnvSnippetRequest, ListProjectKeysRequest,
-    ListProjectsRequest, ProjectReadinessRequest, SearchKeysRequest, VaultService,
+    parse_args, AddKeyRequest, DeleteKeyRequest, DiscoverProjectRequest, EnvSnippetRequest,
+    ListProjectKeysRequest, ListProjectsRequest, ProjectReadinessRequest, SearchKeysRequest,
+    VaultService,
 };
 
 type ToolHandler = fn(&VaultService<'_>, Value) -> Result<Value>;
@@ -369,6 +370,35 @@ impl ToolRegistry {
                     |service, args| {
                         let args: AddKeyRequest = parse_args(args)?;
                         service.add_key(args)
+                    },
+                ),
+                ToolDefinition::write_with_output(
+                    "delete_key",
+                    "Permanently delete a secret from KeyFlow by its name (slug). This action is irreversible.",
+                    json!({
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Secret slug name as returned by search_keys or list_keys_for_project (e.g. 'finnhub-api-key')."
+                            }
+                        },
+                        "required": ["name"]
+                    }),
+                    json!({
+                        "type": "object",
+                        "properties": {
+                            "success": { "type": "boolean" },
+                            "name": { "type": "string" },
+                            "env_var": { "type": "string" },
+                            "message": { "type": "string" },
+                            "error": { "type": ["string", "null"] }
+                        },
+                        "required": ["success", "name", "message", "error"]
+                    }),
+                    |service, args| {
+                        let args: DeleteKeyRequest = parse_args(args)?;
+                        service.delete_key(args)
                     },
                 ),
                 ToolDefinition::read_with_output(

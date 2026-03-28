@@ -339,6 +339,36 @@ impl<'a> VaultService<'a> {
         }
     }
 
+    pub fn delete_key(&self, request: DeleteKeyRequest) -> Result<Value> {
+        let entries = self.secrets.get_entries_by_name(&request.name)?;
+        if entries.is_empty() {
+            return Ok(json!({
+                "success": false,
+                "name": request.name,
+                "message": format!("Secret '{}' not found", request.name),
+                "error": "not_found"
+            }));
+        }
+        let entry = &entries[0];
+        let removed = self.secrets.remove_secret(&entry.id)?;
+        if removed {
+            Ok(json!({
+                "success": true,
+                "name": entry.name,
+                "env_var": entry.env_var,
+                "message": format!("Secret '{}' deleted successfully", entry.name),
+                "error": Value::Null
+            }))
+        } else {
+            Ok(json!({
+                "success": false,
+                "name": request.name,
+                "message": "Failed to delete secret",
+                "error": "delete_failed"
+            }))
+        }
+    }
+
     pub fn get_env_snippet(&self, filter: EnvSnippetRequest) -> Result<Value> {
         if filter.project.is_none() {
             bail!("'project' must be specified");
@@ -571,6 +601,11 @@ pub struct ProjectReadinessRequest {
 
 fn default_true() -> bool {
     true
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteKeyRequest {
+    pub name: String,
 }
 
 pub fn parse_args<T>(value: Value) -> Result<T>
