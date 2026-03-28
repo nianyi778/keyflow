@@ -208,7 +208,7 @@ impl<'a> VaultService<'a> {
         if entries.is_empty() {
             bail!("Secret '{}' not found", name);
         }
-        let keys: Vec<Value> = entries.iter().map(|e| models::secret_to_json(e)).collect();
+        let keys: Vec<Value> = entries.iter().map(models::secret_to_json).collect();
         let count = keys.len();
         Ok(json!({ "keys": keys, "count": count }))
     }
