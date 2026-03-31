@@ -98,8 +98,12 @@ End-to-end encrypted sync. The server never sees plaintext:
 kf sync init       # Register and bind to cloud
 kf sync push       # Push local changes
 kf sync pull       # Pull remote changes
+kf sync pull --strategy local   # Conflict: keep local
+kf sync pull --strategy ask     # Conflict: prompt interactively
 kf sync run        # Bidirectional sync (pull then push)
 kf sync status     # Show sync status
+kf sync conflicts  # View conflict log
+kf sync conflicts --clear       # Clear conflict log
 kf sync deploy     # Deploy sync worker to Cloudflare
 kf sync disconnect # Disconnect from sync
 ```
@@ -128,6 +132,7 @@ kf sync disconnect # Disconnect from sync
 | `kf passwd` | Change master password |
 | `kf lock` | Lock vault |
 | `kf completions <shell>` | Generate shell completions |
+| `kf upgrade` | Upgrade to the latest version |
 
 ## Security
 

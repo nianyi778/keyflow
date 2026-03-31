@@ -98,8 +98,12 @@ AI 只能看到元数据（名称、provider、项目、状态），看不到密
 kf sync init       # 注册并绑定云端
 kf sync push       # 推送本地变更
 kf sync pull       # 拉取远端变更
+kf sync pull --strategy local   # 冲突时保留本地
+kf sync pull --strategy ask     # 冲突时逐条交互选择
 kf sync run        # 双向同步（先拉后推）
 kf sync status     # 查看同步状态
+kf sync conflicts  # 查看冲突日志
+kf sync conflicts --clear       # 清空冲突日志
 kf sync deploy     # 部署同步 Worker 到 Cloudflare
 kf sync disconnect # 断开云同步
 ```
@@ -128,6 +132,7 @@ kf sync disconnect # 断开云同步
 | `kf passwd` | 改主密码 |
 | `kf lock` | 锁定 vault |
 | `kf completions <shell>` | 生成 shell 补全脚本 |
+| `kf upgrade` | 升级到最新版本 |
 
 ## 安全
 
