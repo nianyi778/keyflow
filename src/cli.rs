@@ -334,9 +334,24 @@ pub enum Commands {
         shell: clap_complete::Shell,
     },
 
+    /// Upgrade KeyFlow to the latest version
+    Upgrade,
+
     /// Cloud sync: push/pull encrypted secrets across devices
     #[command(subcommand)]
     Sync(SyncCommands),
+}
+
+
+/// Conflict resolution strategy for sync pull
+#[derive(Clone, clap::ValueEnum, Debug)]
+pub enum ConflictStrategy {
+    /// Cloud wins: remote value overwrites local (default)
+    Cloud,
+    /// Local wins: keep local value and refresh updated_at so it gets pushed
+    Local,
+    /// Ask: prompt interactively for each conflict
+    Ask,
 }
 
 #[derive(Subcommand)]
@@ -352,10 +367,18 @@ pub enum SyncCommands {
     Push,
 
     /// Pull remote changes to local
-    Pull,
+    Pull {
+        /// Conflict resolution strategy when both sides changed (default: cloud)
+        #[arg(long, value_enum, default_value = "cloud")]
+        strategy: ConflictStrategy,
+    },
 
     /// Bidirectional sync (pull then push)
-    Run,
+    Run {
+        /// Conflict resolution strategy when both sides changed (default: cloud)
+        #[arg(long, value_enum, default_value = "cloud")]
+        strategy: ConflictStrategy,
+    },
 
     /// Show sync status
     Status,
@@ -365,4 +388,11 @@ pub enum SyncCommands {
 
     /// Disconnect from sync (remove local config)
     Disconnect,
+
+    /// View (or clear) the sync conflict log
+    Conflicts {
+        /// Clear the conflict log
+        #[arg(long)]
+        clear: bool,
+    },
 }

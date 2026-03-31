@@ -12,4 +12,4 @@ pub use secrets::{
 };
 pub use setup::{cmd_serve, cmd_setup};
 pub use sync::cmd_sync;
-pub use vault::{cmd_backup, cmd_init, cmd_passwd, cmd_restore};
+pub use vault::{cmd_backup, cmd_init, cmd_passwd, cmd_restore, cmd_upgrade};

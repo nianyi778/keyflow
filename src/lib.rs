@@ -168,5 +168,6 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::Sync(sub) => commands::cmd_sync(sub),
+        Commands::Upgrade => commands::cmd_upgrade(),
     }
 }

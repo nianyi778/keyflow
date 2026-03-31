@@ -5,6 +5,7 @@ use dialoguer::{Confirm, Password};
 use std::fs;
 use std::io::IsTerminal;
 use std::path::Path;
+use std::process::Command;
 
 use crate::commands::auth::{get_data_dir, get_passphrase, load_config, open_db, save_keyfile};
 use crate::commands::helpers::{BackupFile, BACKUP_FORMAT_VERSION};
@@ -361,4 +362,94 @@ pub fn cmd_restore(file: &str, passphrase_arg: Option<String>) -> Result<()> {
         skipped
     );
     Ok(())
+}
+
+pub fn cmd_upgrade() -> Result<()> {
+    let current = env!("CARGO_PKG_VERSION");
+    println!("Current version: {}", style(current).cyan());
+    print!("Checking latest release... ");
+
+    let latest = fetch_latest_version()?;
+    println!("{}", style(&latest).cyan());
+
+    if latest == current {
+        println!("{} Already up to date.", style("✓").green().bold());
+        return Ok(());
+    }
+
+    println!(
+        "{} New version available: {}",
+        style("↑").yellow().bold(),
+        style(&latest).yellow().bold()
+    );
+
+    if is_homebrew_install() {
+        println!("Detected Homebrew installation. Running `brew upgrade keyflow`...\n");
+        let status = Command::new("brew")
+            .args(["upgrade", "keyflow"])
+            .status()
+            .context("Failed to run brew")?;
+        if !status.success() {
+            bail!("brew upgrade keyflow failed");
+        }
+    } else if is_cargo_install() {
+        println!("Detected cargo installation. Running `cargo install keyflow`...\n");
+        let status = Command::new("cargo")
+            .args(["install", "keyflow"])
+            .status()
+            .context("Failed to run cargo")?;
+        if !status.success() {
+            bail!("cargo install keyflow failed");
+        }
+    } else {
+        println!(
+            "To upgrade, run one of:\n  {} brew upgrade keyflow\n  {} cargo install keyflow\n  {} Download from https://github.com/nianyi778/keyflow/releases/tag/v{}",
+            style("•").dim(),
+            style("•").dim(),
+            style("•").dim(),
+            latest,
+        );
+    }
+
+    Ok(())
+}
+
+fn fetch_latest_version() -> Result<String> {
+    let mut resp = ureq::get("https://api.github.com/repos/nianyi778/keyflow/releases/latest")
+        .header("User-Agent", "keyflow-cli")
+        .call()
+        .map_err(|e| anyhow::anyhow!("Failed to check for updates: {e}"))?;
+    let payload: serde_json::Value = resp
+        .body_mut()
+        .read_json()
+        .context("Failed to parse GitHub release response")?;
+    let tag = payload
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .context("Missing tag_name in GitHub response")?;
+    Ok(tag.trim_start_matches('v').to_string())
+}
+
+fn is_homebrew_install() -> bool {
+    // Check if keyflow binary lives under a Homebrew Cellar path
+    if let Ok(exe) = std::env::current_exe() {
+        let path = exe.to_string_lossy();
+        if path.contains("/Cellar/") || path.contains("/homebrew/") || path.contains("/opt/homebrew/") {
+            return true;
+        }
+    }
+    // Fallback: brew list reports it
+    Command::new("brew")
+        .args(["list", "keyflow"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn is_cargo_install() -> bool {
+    if let Ok(exe) = std::env::current_exe() {
+        exe.to_string_lossy().contains("/.cargo/bin/")
+    } else {
+        false
+    }
 }

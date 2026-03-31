@@ -6,13 +6,13 @@ use dialoguer::{Confirm, Password};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-use crate::cli::SyncCommands;
+use crate::cli::{ConflictStrategy, SyncCommands};
 use crate::commands::auth::{get_passphrase, open_db};
 use crate::crypto::Crypto;
 use crate::db::{Database, MetadataUpdate};
@@ -54,8 +54,23 @@ struct SyncEntry {
     pub is_active: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct ConflictLogEntry {
+    ts: String,
+    name: String,
+    local_updated_at: String,
+    remote_updated_at: String,
+    local_preview: String,
+    remote_preview: String,
+    resolution: String,
+}
+
 fn sync_config_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("sync.json"))
+}
+
+fn conflict_log_path() -> Result<PathBuf> {
+    Ok(data_dir()?.join("sync-conflicts.jsonl"))
 }
 
 fn load_sync_config() -> Result<SyncConfig> {
@@ -236,15 +251,45 @@ fn ensure_unique_name(db: &Database, base: &str, projects: &[String]) -> Result<
     }
 }
 
+/// Mask a secret value for display in conflict previews.
+/// Values with length <= 8 are shown as "••••".
+/// Longer values show first 4 chars + "••••" + last 4 chars.
+fn mask_value(v: &str) -> String {
+    let chars: Vec<char> = v.chars().collect();
+    if chars.len() <= 8 {
+        "••••".to_string()
+    } else {
+        let prefix: String = chars[..4].iter().collect();
+        let suffix: String = chars[chars.len() - 4..].iter().collect();
+        format!("{}••••{}", prefix, suffix)
+    }
+}
+
+fn append_conflict_log(entry: &ConflictLogEntry) -> Result<()> {
+    let path = conflict_log_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let line = serde_json::to_string(entry)?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("Failed to open conflict log at {}", path.to_string_lossy()))?;
+    writeln!(file, "{}", line)?;
+    Ok(())
+}
+
 pub fn cmd_sync(sub: SyncCommands) -> Result<()> {
     match sub {
         SyncCommands::Init { endpoint } => cmd_sync_init(endpoint),
         SyncCommands::Push => cmd_sync_push(),
-        SyncCommands::Pull => cmd_sync_pull(),
-        SyncCommands::Run => cmd_sync_run(),
+        SyncCommands::Pull { strategy } => cmd_sync_pull(strategy),
+        SyncCommands::Run { strategy } => cmd_sync_run(strategy),
         SyncCommands::Status => cmd_sync_status(),
         SyncCommands::Deploy => cmd_sync_deploy(),
         SyncCommands::Disconnect => cmd_sync_disconnect(),
+        SyncCommands::Conflicts { clear } => cmd_sync_conflicts(clear),
     }
 }
 
@@ -478,17 +523,34 @@ fn cmd_sync_push() -> Result<()> {
     Ok(())
 }
 
-fn cmd_sync_pull() -> Result<()> {
+fn cmd_sync_pull(strategy: ConflictStrategy) -> Result<()> {
     let mut config = load_sync_config()?;
     let vault_passphrase = get_passphrase()?;
     let sync_crypto = make_sync_crypto(&vault_passphrase, &config.sync_salt)?;
     let service = SecretService::new(open_db()?);
     let db = service.db();
 
+    // Parse last_sync_at for conflict detection
+    let last_sync_at: Option<DateTime<Utc>> = match config.last_sync_at.as_deref() {
+        Some(ts) => Some(parse_ts(ts, "last_sync_at")?),
+        None => None,
+    };
+
     let local_entries = db.list_secrets(&ListFilter {
         inactive: true,
         ..Default::default()
     })?;
+    // Fetch local raw values for Ask-mode preview
+    let all_raw = db.get_all_raw()?;
+    let mut local_value_map: HashMap<String, String> = HashMap::new();
+    for (name, encrypted) in &all_raw {
+        if let Ok(decrypted) = db.decrypt_raw(encrypted) {
+            if let Ok(value) = String::from_utf8(decrypted) {
+                local_value_map.insert(name.clone(), value);
+            }
+        }
+    }
+
     let mut local_by_id: HashMap<String, SecretEntry> = HashMap::new();
     for entry in local_entries {
         local_by_id.insert(entry.id.clone(), entry);
@@ -517,6 +579,7 @@ fn cmd_sync_pull() -> Result<()> {
     let mut updated = 0usize;
     let mut deactivated = 0usize;
     let mut skipped = 0usize;
+    let mut conflicts_resolved = 0usize;
 
     for change in &changes {
         let encrypted_blob = change
@@ -532,7 +595,7 @@ fn cmd_sync_pull() -> Result<()> {
             if is_deleted {
                 if local.is_active {
                     db.update_secret_metadata(
-                        &local.name,
+                        &local.id,
                         &MetadataUpdate {
                             is_active: Some(false),
                             ..Default::default()
@@ -545,29 +608,73 @@ fn cmd_sync_pull() -> Result<()> {
                 continue;
             }
 
-            if remote_updated > local.updated_at {
-                db.update_secret_value(&local.name, &remote_entry.value)?;
-                let expires_at = parse_opt_ts(remote_entry.expires_at.as_deref(), "expires_at")?;
-                let last_verified_at =
-                    parse_opt_ts(remote_entry.last_verified_at.as_deref(), "last_verified_at")?;
-                db.update_secret_metadata(
-                    &local.name,
-                    &MetadataUpdate {
-                        provider: Some(&remote_entry.provider),
-                        account_name: Some(&remote_entry.account_name),
-                        org_name: Some(&remote_entry.org_name),
-                        description: Some(&remote_entry.description),
-                        source: Some(&remote_entry.source),
-                        environment: Some(&remote_entry.environment),
-                        permission_profile: Some(&remote_entry.permission_profile),
-                        scopes: Some(&remote_entry.scopes),
-                        projects: Some(&remote_entry.projects),
-                        apply_url: Some(&remote_entry.apply_url),
-                        expires_at: Some(expires_at),
-                        last_verified_at: Some(last_verified_at),
-                        is_active: Some(remote_entry.is_active),
-                    },
+            // Conflict detection
+            // local_dirty: local was modified after last sync
+            // remote_dirty: remote was modified after last sync (or no last_sync = always true)
+            let local_dirty = last_sync_at
+                .map(|t| local.updated_at > t)
+                .unwrap_or(false);
+            let remote_dirty = last_sync_at
+                .map(|t| remote_updated > t)
+                .unwrap_or(true);
+
+            if local_dirty && remote_dirty {
+                // True conflict: both sides changed since last sync
+                let local_val = local_value_map.get(&local.name).cloned().unwrap_or_default();
+                let local_preview = mask_value(&local_val);
+                let remote_preview = mask_value(&remote_entry.value);
+
+                let resolution = resolve_conflict(
+                    &strategy,
+                    &remote_entry.name,
+                    &local.updated_at.to_rfc3339(),
+                    &remote_updated.to_rfc3339(),
+                    &local_preview,
+                    &remote_preview,
                 )?;
+
+                // Log the conflict
+                let log_entry = ConflictLogEntry {
+                    ts: Utc::now().to_rfc3339(),
+                    name: remote_entry.name.clone(),
+                    local_updated_at: local.updated_at.to_rfc3339(),
+                    remote_updated_at: remote_updated.to_rfc3339(),
+                    local_preview: local_preview.clone(),
+                    remote_preview: remote_preview.clone(),
+                    resolution: resolution.clone(),
+                };
+                if let Err(e) = append_conflict_log(&log_entry) {
+                    eprintln!("{} Failed to write conflict log: {e}", style("!").yellow());
+                }
+
+                match resolution.as_str() {
+                    "cloud" => {
+                        // Apply remote value and metadata
+                        apply_remote_entry(db, local, &remote_entry)?;
+                        updated += 1;
+                    }
+                    "local" => {
+                        // Keep local value, but refresh updated_at so push will include it
+                        db.update_secret_metadata(
+                            &local.id,
+                            &MetadataUpdate {
+                                ..Default::default()
+                            },
+                        )?;
+                        skipped += 1;
+                    }
+                    _ => {
+                        // "skip" - do nothing
+                        skipped += 1;
+                    }
+                }
+                conflicts_resolved += 1;
+                continue;
+            }
+
+            if remote_dirty {
+                // Safe update: only remote changed
+                apply_remote_entry(db, local, &remote_entry)?;
                 updated += 1;
             } else {
                 skipped += 1;
@@ -596,20 +703,117 @@ fn cmd_sync_pull() -> Result<()> {
     save_sync_config(&config)?;
 
     println!(
-        "{} Pulled {} changes (inserted {}, updated {}, deactivated {}, skipped {})",
+        "{} Pulled {} changes (inserted {}, updated {}, deactivated {}, skipped {}, conflicts {})",
         style("✓").green().bold(),
         changes.len(),
         inserted,
         updated,
         deactivated,
-        skipped
+        skipped,
+        conflicts_resolved,
     );
     Ok(())
 }
 
-fn cmd_sync_run() -> Result<()> {
+/// Apply a remote entry's value and metadata to the local database.
+fn apply_remote_entry(db: &Database, local: &SecretEntry, remote: &SyncEntry) -> Result<()> {
+    db.update_secret_value(&local.id, &remote.value)?;
+    let expires_at = parse_opt_ts(remote.expires_at.as_deref(), "expires_at")?;
+    let last_verified_at =
+        parse_opt_ts(remote.last_verified_at.as_deref(), "last_verified_at")?;
+    db.update_secret_metadata(
+        &local.id,
+        &MetadataUpdate {
+            provider: Some(&remote.provider),
+            account_name: Some(&remote.account_name),
+            org_name: Some(&remote.org_name),
+            description: Some(&remote.description),
+            source: Some(&remote.source),
+            environment: Some(&remote.environment),
+            permission_profile: Some(&remote.permission_profile),
+            scopes: Some(&remote.scopes),
+            projects: Some(&remote.projects),
+            apply_url: Some(&remote.apply_url),
+            expires_at: Some(expires_at),
+            last_verified_at: Some(last_verified_at),
+            is_active: Some(remote.is_active),
+        },
+    )?;
+    Ok(())
+}
+
+/// Resolve a conflict according to the chosen strategy.
+/// Returns "cloud", "local", or "skip".
+fn resolve_conflict(
+    strategy: &ConflictStrategy,
+    name: &str,
+    local_updated_at: &str,
+    remote_updated_at: &str,
+    local_preview: &str,
+    remote_preview: &str,
+) -> Result<String> {
+    match strategy {
+        ConflictStrategy::Cloud => {
+            println!(
+                "{} Conflict on {}: cloud wins (local: {}, remote: {})",
+                style("!").yellow(),
+                style(name).bold(),
+                local_preview,
+                remote_preview,
+            );
+            Ok("cloud".to_string())
+        }
+        ConflictStrategy::Local => {
+            println!(
+                "{} Conflict on {}: local wins (local: {}, remote: {})",
+                style("!").yellow(),
+                style(name).bold(),
+                local_preview,
+                remote_preview,
+            );
+            Ok("local".to_string())
+        }
+        ConflictStrategy::Ask => {
+            println!();
+            println!(
+                "{} Conflict detected: {}",
+                style("!").yellow().bold(),
+                style(name).bold()
+            );
+            println!(
+                "  Local  ({}): {}",
+                style(local_updated_at).dim(),
+                style(local_preview).cyan()
+            );
+            println!(
+                "  Remote ({}): {}",
+                style(remote_updated_at).dim(),
+                style(remote_preview).cyan()
+            );
+            println!("  Resolution: [c]loud / [l]ocal / [s]kip ?");
+            print!("  > ");
+            io::stdout().flush()?;
+
+            let stdin = io::stdin();
+            let mut input = String::new();
+            stdin.lock().read_line(&mut input)?;
+            let choice = input.trim().to_lowercase();
+
+            match choice.as_str() {
+                "l" | "local" => Ok("local".to_string()),
+                "s" | "skip" => Ok("skip".to_string()),
+                _ => {
+                    // Default to cloud for anything else including "c"
+                    Ok("cloud".to_string())
+                }
+            }
+        }
+    }
+}
+
+fn cmd_sync_run(strategy: ConflictStrategy) -> Result<()> {
     println!("Pulling remote changes...");
-    cmd_sync_pull()?;
+    cmd_sync_pull(strategy)?;
     println!("Pushing local changes...");
     cmd_sync_push()?;
     println!("Sync complete.");
@@ -748,5 +952,82 @@ fn cmd_sync_disconnect() -> Result<()> {
         )
     })?;
     println!("{} Sync disconnected.", style("✓").green().bold());
+    Ok(())
+}
+
+fn cmd_sync_conflicts(clear: bool) -> Result<()> {
+    let path = conflict_log_path()?;
+
+    if clear {
+        if path.exists() {
+            fs::remove_file(&path).with_context(|| {
+                format!(
+                    "Failed to remove conflict log at {}",
+                    path.to_string_lossy()
+                )
+            })?;
+            println!("{} Conflict log cleared.", style("✓").green().bold());
+        } else {
+            println!("No conflict log found.");
+        }
+        return Ok(());
+    }
+
+    if !path.exists() {
+        println!("No conflict log found. (Conflicts are logged to {})", path.to_string_lossy());
+        return Ok(());
+    }
+
+    let file = fs::File::open(&path)
+        .with_context(|| format!("Failed to open conflict log at {}", path.to_string_lossy()))?;
+    let reader = io::BufReader::new(file);
+    let mut count = 0usize;
+
+    println!("{}", style("Sync Conflict Log").bold().underlined());
+    println!();
+
+    for line in reader.lines() {
+        let line = line.context("Failed to read conflict log line")?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<ConflictLogEntry>(&line) {
+            Ok(entry) => {
+                count += 1;
+                println!(
+                    "{} {} {}",
+                    style(&entry.ts).dim(),
+                    style(&entry.name).bold(),
+                    style(format!("[{}]", entry.resolution)).yellow()
+                );
+                println!(
+                    "  Local  ({}): {}",
+                    style(&entry.local_updated_at).dim(),
+                    style(&entry.local_preview).cyan()
+                );
+                println!(
+                    "  Remote ({}): {}",
+                    style(&entry.remote_updated_at).dim(),
+                    style(&entry.remote_preview).cyan()
+                );
+                println!();
+            }
+            Err(e) => {
+                eprintln!("{} Failed to parse conflict log entry: {e}", style("!").yellow());
+            }
+        }
+    }
+
+    if count == 0 {
+        println!("No conflict entries found.");
+    } else {
+        println!("{} total conflict(s) logged.", count);
+        println!(
+            "Log file: {}",
+            style(path.to_string_lossy()).dim()
+        );
+        println!("Run `kf sync conflicts --clear` to clear the log.");
+    }
+
     Ok(())
 }
