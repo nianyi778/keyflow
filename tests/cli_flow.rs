@@ -678,3 +678,220 @@ fn health_reports_metadata_review_items_for_incomplete_assets() {
     assert!(stdout.contains("project"));
     assert!(stdout.contains("expiry"));
 }
+
+#[test]
+fn cmd_get_masks_value_by_default() {
+    let root = temp_root("get-mask");
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+
+    let init = run_kf(&home, &["init", "--passphrase", "pass123"]);
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let add = run_kf(
+        &home,
+        &[
+            "add",
+            "GET_MASK_KEY",
+            "sk-1234567890abcdef",
+            "--provider",
+            "other",
+        ],
+    );
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    let get = run_kf(&home, &["get", "get-mask-key"]);
+    assert!(
+        get.status.success(),
+        "get failed: {}",
+        String::from_utf8_lossy(&get.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&get.stdout);
+    assert!(stdout.contains("sk-1...cdef"), "should mask: {}", stdout);
+    assert!(
+        !stdout.contains("sk-1234567890abcdef"),
+        "should not show full: {}",
+        stdout
+    );
+}
+
+#[test]
+fn cmd_get_raw_shows_full_value() {
+    let root = temp_root("get-raw");
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+
+    let init = run_kf(&home, &["init", "--passphrase", "pass123"]);
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let add = run_kf(
+        &home,
+        &[
+            "add",
+            "GET_RAW_KEY",
+            "sk-1234567890abcdef",
+            "--provider",
+            "other",
+        ],
+    );
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    let get = run_kf(&home, &["get", "get-raw-key", "--raw"]);
+    assert!(
+        get.status.success(),
+        "get failed: {}",
+        String::from_utf8_lossy(&get.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&get.stdout);
+    assert!(
+        stdout.contains("sk-1234567890abcdef"),
+        "should show full: {}",
+        stdout
+    );
+}
+
+#[test]
+fn cmd_update_changes_provider() {
+    let root = temp_root("update-provider");
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+
+    let init = run_kf(&home, &["init", "--passphrase", "pass123"]);
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let add = run_kf(
+        &home,
+        &["add", "UPD_KEY", "some-value", "--provider", "old-provider"],
+    );
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    let update = run_kf(&home, &["update", "upd-key", "--provider", "new-provider"]);
+    assert!(
+        update.status.success(),
+        "update failed: {}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+
+    let list = run_kf(&home, &["list"]);
+    assert!(
+        list.status.success(),
+        "list failed: {}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(
+        stdout.contains("new-provider"),
+        "should have new provider: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("old-provider"),
+        "should not have old provider: {}",
+        stdout
+    );
+}
+
+#[test]
+fn cmd_update_verify_works() {
+    let root = temp_root("update-verify");
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+
+    let init = run_kf(&home, &["init", "--passphrase", "pass123"]);
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let add = run_kf(
+        &home,
+        &["add", "VERIFY_KEY", "some-value", "--provider", "other"],
+    );
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    let update = run_kf(&home, &["update", "verify-key", "--verify"]);
+    assert!(
+        update.status.success(),
+        "update --verify failed: {}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+
+    let search = run_kf(&home, &["search", "verify-key"]);
+    assert!(
+        search.status.success(),
+        "search failed: {}",
+        String::from_utf8_lossy(&search.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&search.stdout);
+    assert!(
+        stdout.contains("verified:"),
+        "should show verified date: {}",
+        stdout
+    );
+}
+
+#[test]
+fn cmd_get_short_value_not_masked() {
+    let root = temp_root("get-short");
+    let home = root.join("home");
+    fs::create_dir_all(&home).unwrap();
+
+    let init = run_kf(&home, &["init", "--passphrase", "pass123"]);
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let add = run_kf(
+        &home,
+        &["add", "SHORT_KEY", "abc12345", "--provider", "other"],
+    );
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    let get = run_kf(&home, &["get", "short-key"]);
+    assert!(
+        get.status.success(),
+        "get failed: {}",
+        String::from_utf8_lossy(&get.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&get.stdout);
+    assert!(
+        stdout.contains("abc12345"),
+        "short value should not be masked: {}",
+        stdout
+    );
+}
