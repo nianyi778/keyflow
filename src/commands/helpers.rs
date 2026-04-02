@@ -101,118 +101,42 @@ pub(crate) fn discover_project_context(start_dir: &Path) -> Option<ProjectContex
     };
     let workspace = discover_workspace_root(start);
 
+    fn to_context(
+        name: String,
+        root: &Path,
+        detector: &'static str,
+        workspace: &Option<(PathBuf, &'static str)>,
+    ) -> ProjectContext {
+        ProjectContext {
+            name,
+            root: root.to_path_buf(),
+            detector,
+            workspace_root: workspace
+                .as_ref()
+                .map(|(ws_root, _)| ws_root)
+                .filter(|ws_root| **ws_root != root.to_path_buf())
+                .cloned(),
+            workspace_detector: workspace
+                .as_ref()
+                .filter(|(ws_root, _)| **ws_root != *root)
+                .map(|(_, det)| *det),
+        }
+    }
+
     for dir in start.ancestors() {
-        if let Some(name) = read_project_name_from_manifest(
-            dir,
-            "package.json",
-            parse_project_name_from_package_json,
-        ) {
-            return Some(ProjectContext {
-                name,
-                root: dir.to_path_buf(),
-                detector: "package.json",
-                workspace_root: workspace
-                    .as_ref()
-                    .map(|(root, _)| root)
-                    .filter(|root| *root != &dir.to_path_buf())
-                    .cloned(),
-                workspace_detector: workspace
-                    .as_ref()
-                    .filter(|(root, _)| *root != dir)
-                    .map(|(_, detector)| *detector),
-            });
-        }
-        if let Some(name) =
-            read_project_name_from_manifest(dir, "Cargo.toml", parse_project_name_from_cargo_toml)
-        {
-            return Some(ProjectContext {
-                name,
-                root: dir.to_path_buf(),
-                detector: "Cargo.toml",
-                workspace_root: workspace
-                    .as_ref()
-                    .map(|(root, _)| root)
-                    .filter(|root| *root != &dir.to_path_buf())
-                    .cloned(),
-                workspace_detector: workspace
-                    .as_ref()
-                    .filter(|(root, _)| *root != dir)
-                    .map(|(_, detector)| *detector),
-            });
-        }
-        if let Some(name) = read_project_name_from_manifest(
-            dir,
-            "pyproject.toml",
-            parse_project_name_from_pyproject_toml,
-        ) {
-            return Some(ProjectContext {
-                name,
-                root: dir.to_path_buf(),
-                detector: "pyproject.toml",
-                workspace_root: workspace
-                    .as_ref()
-                    .map(|(root, _)| root)
-                    .filter(|root| *root != &dir.to_path_buf())
-                    .cloned(),
-                workspace_detector: workspace
-                    .as_ref()
-                    .filter(|(root, _)| *root != dir)
-                    .map(|(_, detector)| *detector),
-            });
-        }
-        if let Some(name) =
-            read_project_name_from_manifest(dir, "go.mod", parse_project_name_from_go_mod)
-        {
-            return Some(ProjectContext {
-                name,
-                root: dir.to_path_buf(),
-                detector: "go.mod",
-                workspace_root: workspace
-                    .as_ref()
-                    .map(|(root, _)| root)
-                    .filter(|root| *root != &dir.to_path_buf())
-                    .cloned(),
-                workspace_detector: workspace
-                    .as_ref()
-                    .filter(|(root, _)| *root != dir)
-                    .map(|(_, detector)| *detector),
-            });
-        }
-        if let Some(name) =
-            read_project_name_from_manifest(dir, "deno.json", parse_project_name_from_package_json)
-        {
-            return Some(ProjectContext {
-                name,
-                root: dir.to_path_buf(),
-                detector: "deno.json",
-                workspace_root: workspace
-                    .as_ref()
-                    .map(|(root, _)| root)
-                    .filter(|root| *root != &dir.to_path_buf())
-                    .cloned(),
-                workspace_detector: workspace
-                    .as_ref()
-                    .filter(|(root, _)| *root != dir)
-                    .map(|(_, detector)| *detector),
-            });
-        }
-        if let Some(name) =
-            read_project_name_from_manifest(dir, "deno.jsonc", parse_project_name_from_deno_jsonc)
-        {
-            return Some(ProjectContext {
-                name,
-                root: dir.to_path_buf(),
-                detector: "deno.jsonc",
-                workspace_root: workspace
-                    .as_ref()
-                    .map(|(root, _)| root)
-                    .filter(|root| *root != &dir.to_path_buf())
-                    .cloned(),
-                workspace_detector: workspace
-                    .as_ref()
-                    .filter(|(root, _)| *root != dir)
-                    .map(|(_, detector)| *detector),
-            });
+        let manifest_types: &[(&str, fn(&str) -> Option<String>)] = &[
+            ("package.json", parse_project_name_from_package_json),
+            ("Cargo.toml", parse_project_name_from_cargo_toml),
+            ("pyproject.toml", parse_project_name_from_pyproject_toml),
+            ("go.mod", parse_project_name_from_go_mod),
+            ("deno.json", parse_project_name_from_package_json),
+            ("deno.jsonc", parse_project_name_from_deno_jsonc),
+        ];
+
+        for &(manifest, parser) in manifest_types {
+            if let Some(name) = read_project_name_from_manifest(dir, manifest, parser) {
+                return Some(to_context(name, dir, manifest, &workspace));
+            }
         }
     }
 

@@ -183,6 +183,10 @@ pub enum Commands {
     },
 
     /// Run a command with secrets injected: `kf run -- npm start`
+    ///
+    /// NOTE: Secrets are injected as environment variables via `cmd.env()`.
+    /// Child processes may expose them via /proc/<pid>/environ (Linux) or `ps eww` (macOS).
+    /// Avoid using `kf run` for secrets that must remain completely hidden from the child process.
     Run {
         /// Project filter (auto-detected from package.json/Cargo.toml if omitted)
         #[arg(short, long)]
@@ -341,7 +345,6 @@ pub enum Commands {
     #[command(subcommand)]
     Sync(SyncCommands),
 }
-
 
 /// Conflict resolution strategy for sync pull
 #[derive(Clone, clap::ValueEnum, Debug)]

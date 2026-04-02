@@ -51,3 +51,118 @@ impl Crypto {
         salt
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_crypto() -> Crypto {
+        let salt = Crypto::generate_salt();
+        Crypto::new("test-passphrase-123", &salt).unwrap()
+    }
+
+    #[test]
+    fn encrypt_decrypt_roundtrip() {
+        let crypto = make_crypto();
+        let plaintext = b"hello world, this is a secret API key sk-abc123def456";
+        let encrypted = crypto.encrypt(plaintext).unwrap();
+        let decrypted = crypto.decrypt(&encrypted).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn encrypt_produces_unique_nonces() {
+        let crypto = make_crypto();
+        let plaintext = b"same plaintext";
+        let ct1 = crypto.encrypt(plaintext).unwrap();
+        let ct2 = crypto.encrypt(plaintext).unwrap();
+        // Different nonces → different ciphertexts even for same plaintext
+        assert_ne!(ct1, ct2);
+        // Both decrypt to the same value
+        assert_eq!(crypto.decrypt(&ct1).unwrap(), plaintext);
+        assert_eq!(crypto.decrypt(&ct2).unwrap(), plaintext);
+    }
+
+    #[test]
+    fn decrypt_with_wrong_passphrase_fails() {
+        let salt = Crypto::generate_salt();
+        let crypto = Crypto::new("correct-passphrase", &salt).unwrap();
+        let crypto_wrong = Crypto::new("wrong-passphrase", &salt).unwrap();
+        let plaintext = b"sensitive data";
+        let encrypted = crypto.encrypt(plaintext).unwrap();
+        assert!(crypto_wrong.decrypt(&encrypted).is_err());
+    }
+
+    #[test]
+    fn decrypt_empty_data_fails() {
+        let crypto = make_crypto();
+        assert!(crypto.decrypt(&[]).is_err());
+    }
+
+    #[test]
+    fn decrypt_too_short_data_fails() {
+        let crypto = make_crypto();
+        // Less than 12 bytes (nonce length)
+        assert!(crypto.decrypt(&[0; 11]).is_err());
+        assert!(crypto.decrypt(&[0; 5]).is_err());
+    }
+
+    #[test]
+    fn decrypt_truncated_ciphertext_fails() {
+        let crypto = make_crypto();
+        let plaintext = b"test data";
+        let encrypted = crypto.encrypt(plaintext).unwrap();
+        // Truncate ciphertext portion (keep nonce only)
+        let truncated = &encrypted[..NONCE_LEN];
+        assert!(crypto.decrypt(truncated).is_err());
+    }
+
+    #[test]
+    fn encrypt_empty_plaintext_works() {
+        let crypto = make_crypto();
+        let encrypted = crypto.encrypt(b"").unwrap();
+        let decrypted = crypto.decrypt(&encrypted).unwrap();
+        assert!(decrypted.is_empty());
+    }
+
+    #[test]
+    fn encrypt_large_plaintext_works() {
+        let crypto = make_crypto();
+        let plaintext = vec![0x42u8; 10_000];
+        let encrypted = crypto.encrypt(&plaintext).unwrap();
+        let decrypted = crypto.decrypt(&encrypted).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn generate_salt_produces_unique_salts() {
+        let s1 = Crypto::generate_salt();
+        let s2 = Crypto::generate_salt();
+        assert_eq!(s1.len(), 32);
+        assert_eq!(s2.len(), 32);
+        assert_ne!(s1, s2);
+    }
+
+    #[test]
+    fn different_passphrases_produce_different_results() {
+        let salt = Crypto::generate_salt();
+        let crypto1 = Crypto::new("passphrase-A", &salt).unwrap();
+        let crypto2 = Crypto::new("passphrase-B", &salt).unwrap();
+        let plaintext = b"same secret";
+        let enc1 = crypto1.encrypt(plaintext).unwrap();
+        let enc2 = crypto2.encrypt(plaintext).unwrap();
+        // Decrypting enc1 with crypto2 should fail
+        assert!(crypto2.decrypt(&enc1).is_err());
+        assert!(crypto1.decrypt(&enc2).is_err());
+    }
+
+    #[test]
+    fn different_salts_produce_different_keys() {
+        let crypto1 = Crypto::new("same-passphrase", &Crypto::generate_salt()).unwrap();
+        let crypto2 = Crypto::new("same-passphrase", &Crypto::generate_salt()).unwrap();
+        let plaintext = b"test";
+        let enc1 = crypto1.encrypt(plaintext).unwrap();
+        // crypto2 cannot decrypt crypto1's ciphertext (different salt → different key)
+        assert!(crypto2.decrypt(&enc1).is_err());
+    }
+}

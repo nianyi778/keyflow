@@ -195,10 +195,29 @@ pub(crate) fn resolve_secret(
             } else {
                 format!("({})", e.projects.join(", "))
             };
-            format!("{:<28} {:<20} {:<16} {:?}", e.name, projects, e.provider, e.status())
+            format!(
+                "{:<28} {:<20} {:<16} {:?}",
+                e.name,
+                projects,
+                e.provider,
+                e.status()
+            )
         })
         .collect();
 
+    if !std::io::stdin().is_terminal() {
+        anyhow::bail!(
+            "Secret '{}' has multiple matches ({} entries). Specify the full name:\n{}",
+            style(name).cyan(),
+            items.len(),
+            items
+                .iter()
+                .enumerate()
+                .map(|(i, n)| format!("  {}. {}", i + 1, n))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
     let idx = FuzzySelect::new()
         .with_prompt(format!("Multiple secrets named '{}' — select one", name))
         .items(&items)
@@ -225,7 +244,10 @@ fn select_secret_entry(service: &SecretService<'_>, project: Option<&str>) -> Re
             } else {
                 format!("({})", e.projects.join(", "))
             };
-            format!("{:<28} {:<20} {:<24} {}", e.name, projects, e.env_var, e.provider)
+            format!(
+                "{:<28} {:<20} {:<24} {}",
+                e.name, projects, e.env_var, e.provider
+            )
         })
         .collect();
     let idx = FuzzySelect::new()

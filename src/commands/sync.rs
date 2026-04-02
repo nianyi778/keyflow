@@ -13,7 +13,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::cli::{ConflictStrategy, SyncCommands};
-use crate::commands::auth::{get_passphrase, open_db};
+use crate::commands::auth::{get_passphrase, get_passphrase_noninteractive, open_db};
 use crate::crypto::Crypto;
 use crate::db::{Database, MetadataUpdate};
 use crate::models::{ListFilter, SecretEntry};
@@ -31,27 +31,17 @@ pub struct SyncConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct SyncEntry {
-    pub id: String,
-    pub name: String,
-    pub env_var: String,
+pub struct SyncEntry {
+    #[serde(flatten)]
+    pub entry: SecretEntry,
     pub value: String,
-    pub provider: String,
-    pub account_name: String,
-    pub org_name: String,
-    pub description: String,
-    pub source: String,
-    pub environment: String,
-    pub permission_profile: String,
-    pub scopes: Vec<String>,
-    pub projects: Vec<String>,
-    pub apply_url: String,
-    pub expires_at: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-    pub last_used_at: Option<String>,
-    pub last_verified_at: Option<String>,
-    pub is_active: bool,
+}
+
+impl std::ops::Deref for SyncEntry {
+    type Target = SecretEntry;
+    fn deref(&self) -> &SecretEntry {
+        &self.entry
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -132,62 +122,6 @@ fn parse_ts(value: &str, field: &str) -> Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .with_context(|| format!("Invalid {field} timestamp: {value}"))
         .map(|dt| dt.with_timezone(&Utc))
-}
-
-fn parse_opt_ts(value: Option<&str>, field: &str) -> Result<Option<DateTime<Utc>>> {
-    match value {
-        Some(v) if !v.is_empty() => Ok(Some(parse_ts(v, field)?)),
-        _ => Ok(None),
-    }
-}
-
-fn to_sync_entry(entry: &SecretEntry, value: String) -> SyncEntry {
-    SyncEntry {
-        id: entry.id.clone(),
-        name: entry.name.clone(),
-        env_var: entry.env_var.clone(),
-        value,
-        provider: entry.provider.clone(),
-        account_name: entry.account_name.clone(),
-        org_name: entry.org_name.clone(),
-        description: entry.description.clone(),
-        source: entry.source.clone(),
-        environment: entry.environment.clone(),
-        permission_profile: entry.permission_profile.clone(),
-        scopes: entry.scopes.clone(),
-        projects: entry.projects.clone(),
-        apply_url: entry.apply_url.clone(),
-        expires_at: entry.expires_at.map(|v| v.to_rfc3339()),
-        created_at: entry.created_at.to_rfc3339(),
-        updated_at: entry.updated_at.to_rfc3339(),
-        last_used_at: entry.last_used_at.map(|v| v.to_rfc3339()),
-        last_verified_at: entry.last_verified_at.map(|v| v.to_rfc3339()),
-        is_active: entry.is_active,
-    }
-}
-
-fn to_secret_entry(sync: &SyncEntry) -> Result<SecretEntry> {
-    Ok(SecretEntry {
-        id: sync.id.clone(),
-        name: sync.name.clone(),
-        env_var: sync.env_var.clone(),
-        provider: sync.provider.clone(),
-        account_name: sync.account_name.clone(),
-        org_name: sync.org_name.clone(),
-        description: sync.description.clone(),
-        source: sync.source.clone(),
-        environment: sync.environment.clone(),
-        permission_profile: sync.permission_profile.clone(),
-        scopes: sync.scopes.clone(),
-        projects: sync.projects.clone(),
-        apply_url: sync.apply_url.clone(),
-        expires_at: parse_opt_ts(sync.expires_at.as_deref(), "expires_at")?,
-        created_at: parse_ts(&sync.created_at, "created_at")?,
-        updated_at: parse_ts(&sync.updated_at, "updated_at")?,
-        last_used_at: parse_opt_ts(sync.last_used_at.as_deref(), "last_used_at")?,
-        last_verified_at: parse_opt_ts(sync.last_verified_at.as_deref(), "last_verified_at")?,
-        is_active: sync.is_active,
-    })
 }
 
 fn parse_boolish(value: Option<&serde_json::Value>) -> bool {
@@ -431,7 +365,7 @@ pub fn try_background_push() {
         return;
     }
     thread::spawn(|| {
-        if let Err(e) = cmd_sync_push() {
+        if let Err(e) = cmd_sync_push_background() {
             eprintln!(
                 "{} Background sync failed: {e}",
                 console::style("!").yellow()
@@ -440,10 +374,30 @@ pub fn try_background_push() {
     });
 }
 
+fn cmd_sync_push_background() -> Result<()> {
+    let config = load_sync_config()?;
+    let passphrase = match get_passphrase_noninteractive() {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!(
+                "{} Background sync skipped: vault is locked. Run `kf sync push` to unlock.",
+                console::style("ℹ").blue()
+            );
+            return Ok(());
+        }
+    };
+    let sync_crypto = make_sync_crypto(&passphrase, &config.sync_salt)?;
+    execute_sync_push(config, sync_crypto)
+}
+
 fn cmd_sync_push() -> Result<()> {
-    let mut config = load_sync_config()?;
-    let vault_passphrase = get_passphrase()?;
-    let sync_crypto = make_sync_crypto(&vault_passphrase, &config.sync_salt)?;
+    let config = load_sync_config()?;
+    let passphrase = get_passphrase()?;
+    let sync_crypto = make_sync_crypto(&passphrase, &config.sync_salt)?;
+    execute_sync_push(config, sync_crypto)
+}
+
+fn execute_sync_push(mut config: SyncConfig, sync_crypto: Crypto) -> Result<()> {
     let service = SecretService::new(open_db()?);
     let db = service.db();
 
@@ -483,7 +437,10 @@ fn cmd_sync_push() -> Result<()> {
             .get(&entry.name)
             .cloned()
             .with_context(|| format!("Missing raw value for secret '{}'", entry.name))?;
-        let sync_entry = to_sync_entry(entry, value);
+        let sync_entry = SyncEntry {
+            entry: entry.clone(),
+            value,
+        };
         let encrypted_blob = encrypt_entry(&sync_entry, &sync_crypto)?;
         payload_entries.push(serde_json::json!({
             "id": sync_entry.id,
@@ -589,7 +546,7 @@ fn cmd_sync_pull(strategy: ConflictStrategy) -> Result<()> {
         let is_deleted = parse_boolish(change.get("is_deleted"));
 
         let remote_entry = decrypt_entry(encrypted_blob, &sync_crypto)?;
-        let remote_updated = parse_ts(&remote_entry.updated_at, "updated_at")?;
+        let remote_updated = remote_entry.updated_at;
 
         if let Some(local) = local_by_id.get(&remote_entry.id) {
             if is_deleted {
@@ -611,16 +568,15 @@ fn cmd_sync_pull(strategy: ConflictStrategy) -> Result<()> {
             // Conflict detection
             // local_dirty: local was modified after last sync
             // remote_dirty: remote was modified after last sync (or no last_sync = always true)
-            let local_dirty = last_sync_at
-                .map(|t| local.updated_at > t)
-                .unwrap_or(false);
-            let remote_dirty = last_sync_at
-                .map(|t| remote_updated > t)
-                .unwrap_or(true);
+            let local_dirty = last_sync_at.map(|t| local.updated_at > t).unwrap_or(false);
+            let remote_dirty = last_sync_at.map(|t| remote_updated > t).unwrap_or(true);
 
             if local_dirty && remote_dirty {
                 // True conflict: both sides changed since last sync
-                let local_val = local_value_map.get(&local.name).cloned().unwrap_or_default();
+                let local_val = local_value_map
+                    .get(&local.name)
+                    .cloned()
+                    .unwrap_or_default();
                 let local_preview = mask_value(&local_val);
                 let remote_preview = mask_value(&remote_entry.value);
 
@@ -687,7 +643,7 @@ fn cmd_sync_pull(strategy: ConflictStrategy) -> Result<()> {
             continue;
         }
 
-        let mut entry = to_secret_entry(&remote_entry)?;
+        let mut entry = remote_entry.entry.clone();
         if !db.get_secrets_by_name(&entry.name)?.is_empty() {
             let unique = ensure_unique_name(db, &entry.name, &entry.projects)?;
             entry.name = unique;
@@ -718,9 +674,6 @@ fn cmd_sync_pull(strategy: ConflictStrategy) -> Result<()> {
 /// Apply a remote entry's value and metadata to the local database.
 fn apply_remote_entry(db: &Database, local: &SecretEntry, remote: &SyncEntry) -> Result<()> {
     db.update_secret_value(&local.id, &remote.value)?;
-    let expires_at = parse_opt_ts(remote.expires_at.as_deref(), "expires_at")?;
-    let last_verified_at =
-        parse_opt_ts(remote.last_verified_at.as_deref(), "last_verified_at")?;
     db.update_secret_metadata(
         &local.id,
         &MetadataUpdate {
@@ -734,8 +687,8 @@ fn apply_remote_entry(db: &Database, local: &SecretEntry, remote: &SyncEntry) ->
             scopes: Some(&remote.scopes),
             projects: Some(&remote.projects),
             apply_url: Some(&remote.apply_url),
-            expires_at: Some(expires_at),
-            last_verified_at: Some(last_verified_at),
+            expires_at: Some(remote.expires_at),
+            last_verified_at: Some(remote.last_verified_at),
             is_active: Some(remote.is_active),
         },
     )?;
@@ -974,7 +927,10 @@ fn cmd_sync_conflicts(clear: bool) -> Result<()> {
     }
 
     if !path.exists() {
-        println!("No conflict log found. (Conflicts are logged to {})", path.to_string_lossy());
+        println!(
+            "No conflict log found. (Conflicts are logged to {})",
+            path.to_string_lossy()
+        );
         return Ok(());
     }
 
@@ -1013,7 +969,10 @@ fn cmd_sync_conflicts(clear: bool) -> Result<()> {
                 println!();
             }
             Err(e) => {
-                eprintln!("{} Failed to parse conflict log entry: {e}", style("!").yellow());
+                eprintln!(
+                    "{} Failed to parse conflict log entry: {e}",
+                    style("!").yellow()
+                );
             }
         }
     }
@@ -1022,10 +981,7 @@ fn cmd_sync_conflicts(clear: bool) -> Result<()> {
         println!("No conflict entries found.");
     } else {
         println!("{} total conflict(s) logged.", count);
-        println!(
-            "Log file: {}",
-            style(path.to_string_lossy()).dim()
-        );
+        println!("Log file: {}", style(path.to_string_lossy()).dim());
         println!("Run `kf sync conflicts --clear` to clear the log.");
     }
 

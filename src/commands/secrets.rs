@@ -296,6 +296,14 @@ pub fn cmd_list(
     Ok(())
 }
 
+fn mask_value(val: &str) -> String {
+    if val.len() <= 8 {
+        val.to_string()
+    } else {
+        format!("{}...{}", &val[..4], &val[val.len() - 4..])
+    }
+}
+
 pub fn cmd_get(name: Option<String>, raw: bool, copy: bool, project: Option<String>) -> Result<()> {
     let service = SecretService::new(open_db()?);
     let entry = resolve_secret(&service, name, project.as_deref())?;
@@ -321,7 +329,7 @@ pub fn cmd_get(name: Option<String>, raw: bool, copy: bool, project: Option<Stri
             "{}: {} = {}",
             style(&view.entry.name).cyan(),
             style(&view.entry.env_var).yellow(),
-            style(&view.value).dim()
+            style(&mask_value(&view.value)).dim()
         );
         if !view.entry.account_name.is_empty() {
             println!("  account: {}", style(&view.entry.account_name).blue());
@@ -387,7 +395,12 @@ pub fn cmd_get(name: Option<String>, raw: bool, copy: bool, project: Option<Stri
     Ok(())
 }
 
-pub fn cmd_remove(name: Option<String>, force: bool, purge: bool, project: Option<String>) -> Result<()> {
+pub fn cmd_remove(
+    name: Option<String>,
+    force: bool,
+    purge: bool,
+    project: Option<String>,
+) -> Result<()> {
     let service = SecretService::new(open_db()?);
     let entry = resolve_secret(&service, name, project.as_deref())?;
 
@@ -703,10 +716,11 @@ pub fn cmd_export(
     Ok(())
 }
 
-pub fn cmd_health(verbose: bool) -> Result<()> {
-    let service = SecretService::new(open_db()?);
-    let health = service.health_view()?;
-    let detail_limit = if verbose { usize::MAX } else { 10 };
+fn print_health_summary_counts(
+    health: &crate::services::secrets::HealthView,
+    verbose: bool,
+    _detail_limit: usize,
+) {
     let has_many_issues = !verbose
         && (health.expired.len() > 10
             || health.expiring.len() > 10
@@ -714,9 +728,6 @@ pub fn cmd_health(verbose: bool) -> Result<()> {
             || health.unused.len() > 10
             || health.metadata_gaps.len() > 10
             || health.inactive.len() > 10);
-
-    println!("{}", style("KeyFlow Health Report").bold().cyan());
-    println!("{}", style("═".repeat(50)).dim());
 
     if has_many_issues {
         println!("\n{} Issue counts:", style("ℹ").blue().bold());
@@ -734,232 +745,285 @@ pub fn cmd_health(verbose: bool) -> Result<()> {
             style("Use --verbose to show all entries in each section.").dim()
         );
     }
+}
 
-    if !health.expired.is_empty() {
+fn print_health_expired(
+    health: &crate::services::secrets::HealthView,
+    verbose: bool,
+    detail_limit: usize,
+) {
+    if health.expired.is_empty() {
+        return;
+    }
+    println!(
+        "\n{} {} Expired Keys:",
+        style("✗").red().bold(),
+        health.expired.len()
+    );
+    for e in health.expired.iter().take(detail_limit) {
         println!(
-            "\n{} {} Expired Keys:",
-            style("✗").red().bold(),
-            health.expired.len()
+            "  {} {} (expired {})",
+            style("•").red(),
+            style(&e.name).cyan(),
+            e.expires_at
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_default()
         );
-        for e in health.expired.iter().take(detail_limit) {
-            println!(
-                "  {} {} (expired {})",
-                style("•").red(),
-                style(&e.name).cyan(),
-                e.expires_at
-                    .map(|d| d.format("%Y-%m-%d").to_string())
-                    .unwrap_or_default()
-            );
-            if !e.apply_url.is_empty() {
-                println!("    Renew at: {}", style(&e.apply_url).underlined());
-            }
-        }
-        if !verbose && health.expired.len() > detail_limit {
-            println!(
-                "  {}",
-                style(format!(
-                    "... and {} more",
-                    health.expired.len() - detail_limit
-                ))
-                .dim()
-            );
+        if !e.apply_url.is_empty() {
+            println!("    Renew at: {}", style(&e.apply_url).underlined());
         }
     }
-
-    if !health.expiring.is_empty() {
+    if !verbose && health.expired.len() > detail_limit {
         println!(
-            "\n{} {} Keys Expiring Within 7 Days:",
-            style("⚠").yellow().bold(),
-            health.expiring.len()
+            "  {}",
+            style(format!(
+                "... and {} more",
+                health.expired.len() - detail_limit
+            ))
+            .dim()
         );
-        for e in health.expiring.iter().take(detail_limit) {
-            let days_left = e
-                .expires_at
-                .map(|d| (d - Utc::now()).num_days().max(0))
-                .unwrap_or(0);
-            println!(
-                "  {} {} ({} days left)",
-                style("•").yellow(),
-                style(&e.name).cyan(),
-                days_left
-            );
-            if !e.apply_url.is_empty() {
-                println!("    Renew at: {}", style(&e.apply_url).underlined());
-            }
-        }
-        if !verbose && health.expiring.len() > detail_limit {
-            println!(
-                "  {}",
-                style(format!(
-                    "... and {} more",
-                    health.expiring.len() - detail_limit
-                ))
-                .dim()
-            );
-        }
     }
+}
 
-    if !health.duplicates.is_empty() {
+fn print_health_expiring(
+    health: &crate::services::secrets::HealthView,
+    verbose: bool,
+    detail_limit: usize,
+) {
+    if health.expiring.is_empty() {
+        return;
+    }
+    println!(
+        "\n{} {} Keys Expiring Within 7 Days:",
+        style("⚠").yellow().bold(),
+        health.expiring.len()
+    );
+    for e in health.expiring.iter().take(detail_limit) {
+        let days_left = e
+            .expires_at
+            .map(|d| (d - Utc::now()).num_days().max(0))
+            .unwrap_or(0);
         println!(
-            "\n{} {} Duplicate / Overlapping Key Groups:",
-            style("⚠").yellow().bold(),
-            health.duplicates.len()
+            "  {} {} ({} days left)",
+            style("•").yellow(),
+            style(&e.name).cyan(),
+            days_left
         );
-        for group in health.duplicates.iter().take(detail_limit) {
-            println!(
-                "  {} {} → {}",
-                style("•").yellow(),
-                style(&group.env_var).yellow(),
-                group
-                    .names
-                    .iter()
-                    .map(|n| style(n).cyan().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
-        if !verbose && health.duplicates.len() > detail_limit {
-            println!(
-                "  {}",
-                style(format!(
-                    "... and {} more",
-                    health.duplicates.len() - detail_limit
-                ))
-                .dim()
-            );
+        if !e.apply_url.is_empty() {
+            println!("    Renew at: {}", style(&e.apply_url).underlined());
         }
     }
-
-    if !health.provider_old_keys.is_empty() {
+    if !verbose && health.expiring.len() > detail_limit {
         println!(
-            "\n{} Same Provider, Multiple Old Keys:",
-            style("⚠").yellow().bold()
+            "  {}",
+            style(format!(
+                "... and {} more",
+                health.expiring.len() - detail_limit
+            ))
+            .dim()
         );
-        for (provider, keys) in &health.provider_old_keys {
-            println!(
-                "  {} {} ({} keys unused 60+ days): {}",
-                style("•").yellow(),
-                style(provider).cyan(),
-                keys.len(),
-                keys.join(", ")
-            );
+    }
+}
+
+fn print_health_duplicates(
+    health: &crate::services::secrets::HealthView,
+    verbose: bool,
+    detail_limit: usize,
+) {
+    if health.duplicates.is_empty() {
+        return;
+    }
+    println!(
+        "\n{} {} Duplicate / Overlapping Key Groups:",
+        style("⚠").yellow().bold(),
+        health.duplicates.len()
+    );
+    for group in health.duplicates.iter().take(detail_limit) {
+        println!(
+            "  {} {} → {}",
+            style("•").yellow(),
+            style(&group.env_var).yellow(),
+            group
+                .names
+                .iter()
+                .map(|n| style(n).cyan().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !verbose && health.duplicates.len() > detail_limit {
+        println!(
+            "  {}",
+            style(format!(
+                "... and {} more",
+                health.duplicates.len() - detail_limit
+            ))
+            .dim()
+        );
+    }
+}
+
+fn print_health_provider_old_keys(health: &crate::services::secrets::HealthView) {
+    if health.provider_old_keys.is_empty() {
+        return;
+    }
+    println!(
+        "\n{} Same Provider, Multiple Old Keys:",
+        style("⚠").yellow().bold()
+    );
+    for (provider, keys) in &health.provider_old_keys {
+        println!(
+            "  {} {} ({} keys unused 60+ days): {}",
+            style("•").yellow(),
+            style(provider).cyan(),
+            keys.len(),
+            keys.join(", ")
+        );
+    }
+}
+
+fn print_health_source_quality(health: &crate::services::secrets::HealthView) {
+    if health.report.source_quality.is_empty() {
+        return;
+    }
+    println!("\n{} Source Quality Breakdown:", style("ℹ").blue().bold());
+    let order = ["import", "manual", "mcp", "other", "unknown"];
+    for tier in &order {
+        if let Some(count) = health.report.source_quality.get(*tier) {
+            println!("  {} {}: {}", style("•").dim(), tier, count);
         }
     }
+}
 
-    if !health.report.source_quality.is_empty() {
-        println!("\n{} Source Quality Breakdown:", style("ℹ").blue().bold());
-        let order = ["import", "manual", "mcp", "other", "unknown"];
-        for tier in &order {
-            if let Some(count) = health.report.source_quality.get(*tier) {
-                println!("  {} {}: {}", style("•").dim(), tier, count);
-            }
-        }
-    }
-
-    if !health.unverified_30.is_empty()
-        || !health.unverified_60.is_empty()
-        || !health.unverified_90.is_empty()
+fn print_health_unverified(health: &crate::services::secrets::HealthView) {
+    if health.unverified_30.is_empty()
+        && health.unverified_60.is_empty()
+        && health.unverified_90.is_empty()
     {
-        println!("\n{} Unverified Keys:", style("!").yellow().bold());
-        if !health.unverified_90.is_empty() {
-            println!(
-                "  {} 90+ days ({}): {}",
-                style("•").red(),
-                health.unverified_90.len(),
-                health.unverified_90.join(", ")
-            );
-        }
-        if !health.unverified_60.is_empty() {
-            println!(
-                "  {} 60-89 days ({}): {}",
-                style("•").yellow(),
-                health.unverified_60.len(),
-                health.unverified_60.join(", ")
-            );
-        }
-        if !health.unverified_30.is_empty() {
-            println!(
-                "  {} 30-59 days ({}): {}",
-                style("•").dim(),
-                health.unverified_30.len(),
-                health.unverified_30.join(", ")
-            );
-        }
+        return;
     }
-
-    if !health.unused.is_empty() {
+    println!("\n{} Unverified Keys:", style("!").yellow().bold());
+    if !health.unverified_90.is_empty() {
         println!(
-            "\n{} {} Keys Unused for 30+ Days:",
-            style("ℹ").blue().bold(),
-            health.unused.len()
+            "  {} 90+ days ({}): {}",
+            style("•").red(),
+            health.unverified_90.len(),
+            health.unverified_90.join(", ")
         );
-        for (name, days) in health.unused.iter().take(detail_limit) {
-            println!(
-                "  {} {} ({} days since last use)",
-                style("•").dim(),
-                style(name).cyan(),
-                days
-            );
-        }
-        if !verbose && health.unused.len() > detail_limit {
-            println!(
-                "  {}",
-                style(format!(
-                    "... and {} more",
-                    health.unused.len() - detail_limit
-                ))
-                .dim()
-            );
-        }
     }
-
-    if !health.metadata_gaps.is_empty() {
+    if !health.unverified_60.is_empty() {
         println!(
-            "\n{} {} Keys Need Metadata Review:",
-            style("!").yellow().bold(),
-            health.metadata_gaps.len()
+            "  {} 60-89 days ({}): {}",
+            style("•").yellow(),
+            health.unverified_60.len(),
+            health.unverified_60.join(", ")
         );
-        for (name, gaps) in health.metadata_gaps.iter().take(detail_limit) {
-            println!(
-                "  {} {} ({})",
-                style("•").yellow(),
-                style(name).cyan(),
-                gaps.join(", ")
-            );
-        }
-        if !verbose && health.metadata_gaps.len() > detail_limit {
-            println!(
-                "  {}",
-                style(format!(
-                    "... and {} more",
-                    health.metadata_gaps.len() - detail_limit
-                ))
-                .dim()
-            );
-        }
     }
-
-    if !health.inactive.is_empty() {
+    if !health.unverified_30.is_empty() {
         println!(
-            "\n{} {} Inactive Keys:",
-            style("⊘").dim(),
-            health.inactive.len()
+            "  {} 30-59 days ({}): {}",
+            style("•").dim(),
+            health.unverified_30.len(),
+            health.unverified_30.join(", ")
         );
-        for name in health.inactive.iter().take(detail_limit) {
-            println!("  {} {}", style("•").dim(), style(name).dim());
-        }
-        if !verbose && health.inactive.len() > detail_limit {
-            println!(
-                "  {}",
-                style(format!(
-                    "... and {} more",
-                    health.inactive.len() - detail_limit
-                ))
-                .dim()
-            );
-        }
     }
+}
 
+fn print_health_unused(
+    health: &crate::services::secrets::HealthView,
+    verbose: bool,
+    detail_limit: usize,
+) {
+    if health.unused.is_empty() {
+        return;
+    }
+    println!(
+        "\n{} {} Keys Unused for 30+ Days:",
+        style("ℹ").blue().bold(),
+        health.unused.len()
+    );
+    for (name, days) in health.unused.iter().take(detail_limit) {
+        println!(
+            "  {} {} ({} days since last use)",
+            style("•").dim(),
+            style(name).cyan(),
+            days
+        );
+    }
+    if !verbose && health.unused.len() > detail_limit {
+        println!(
+            "  {}",
+            style(format!(
+                "... and {} more",
+                health.unused.len() - detail_limit
+            ))
+            .dim()
+        );
+    }
+}
+
+fn print_health_metadata_gaps(
+    health: &crate::services::secrets::HealthView,
+    verbose: bool,
+    detail_limit: usize,
+) {
+    if health.metadata_gaps.is_empty() {
+        return;
+    }
+    println!(
+        "\n{} {} Keys Need Metadata Review:",
+        style("!").yellow().bold(),
+        health.metadata_gaps.len()
+    );
+    for (name, gaps) in health.metadata_gaps.iter().take(detail_limit) {
+        println!(
+            "  {} {} ({})",
+            style("•").yellow(),
+            style(name).cyan(),
+            gaps.join(", ")
+        );
+    }
+    if !verbose && health.metadata_gaps.len() > detail_limit {
+        println!(
+            "  {}",
+            style(format!(
+                "... and {} more",
+                health.metadata_gaps.len() - detail_limit
+            ))
+            .dim()
+        );
+    }
+}
+
+fn print_health_inactive(
+    health: &crate::services::secrets::HealthView,
+    verbose: bool,
+    detail_limit: usize,
+) {
+    if health.inactive.is_empty() {
+        return;
+    }
+    println!(
+        "\n{} {} Inactive Keys:",
+        style("⊘").dim(),
+        health.inactive.len()
+    );
+    for name in health.inactive.iter().take(detail_limit) {
+        println!("  {} {}", style("•").dim(), style(name).dim());
+    }
+    if !verbose && health.inactive.len() > detail_limit {
+        println!(
+            "  {}",
+            style(format!(
+                "... and {} more",
+                health.inactive.len() - detail_limit
+            ))
+            .dim()
+        );
+    }
+}
+
+fn print_health_footer(health: &crate::services::secrets::HealthView) {
     println!("{}", style("═".repeat(50)).dim());
     if health.summary.expiry_issues == 0
         && health.summary.inactive_count == 0
@@ -983,6 +1047,27 @@ pub fn cmd_health(verbose: bool) -> Result<()> {
                 + health.summary.metadata_review_count
         );
     }
+}
+
+pub fn cmd_health(verbose: bool) -> Result<()> {
+    let service = SecretService::new(open_db()?);
+    let health = service.health_view()?;
+    let detail_limit = if verbose { usize::MAX } else { 10 };
+
+    println!("{}", style("KeyFlow Health Report").bold().cyan());
+    println!("{}", style("═".repeat(50)).dim());
+
+    print_health_summary_counts(&health, verbose, detail_limit);
+    print_health_expired(&health, verbose, detail_limit);
+    print_health_expiring(&health, verbose, detail_limit);
+    print_health_duplicates(&health, verbose, detail_limit);
+    print_health_provider_old_keys(&health);
+    print_health_source_quality(&health);
+    print_health_unverified(&health);
+    print_health_unused(&health, verbose, detail_limit);
+    print_health_metadata_gaps(&health, verbose, detail_limit);
+    print_health_inactive(&health, verbose, detail_limit);
+    print_health_footer(&health);
 
     Ok(())
 }

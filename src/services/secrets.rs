@@ -99,6 +99,65 @@ pub struct SecretUpdate {
     pub verify: bool,
 }
 
+impl SecretUpdate {
+    pub fn with_value(mut self, value: impl Into<String>) -> Self {
+        self.value = Some(value.into());
+        self
+    }
+    pub fn with_provider(mut self, provider: impl Into<String>) -> Self {
+        self.provider = Some(provider.into());
+        self
+    }
+    pub fn with_account_name(mut self, account_name: impl Into<String>) -> Self {
+        self.account_name = Some(account_name.into());
+        self
+    }
+    pub fn with_org_name(mut self, org_name: impl Into<String>) -> Self {
+        self.org_name = Some(org_name.into());
+        self
+    }
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+    pub fn with_source(mut self, source: impl Into<String>) -> Self {
+        self.source = Some(source.into());
+        self
+    }
+    pub fn with_environment(mut self, environment: impl Into<String>) -> Self {
+        self.environment = Some(environment.into());
+        self
+    }
+    pub fn with_permission_profile(mut self, permission_profile: impl Into<String>) -> Self {
+        self.permission_profile = Some(permission_profile.into());
+        self
+    }
+    pub fn with_scopes(mut self, scopes: Vec<String>) -> Self {
+        self.scopes = Some(scopes);
+        self
+    }
+    pub fn with_projects(mut self, projects: Vec<String>) -> Self {
+        self.projects = Some(projects);
+        self
+    }
+    pub fn with_apply_url(mut self, apply_url: impl Into<String>) -> Self {
+        self.apply_url = Some(apply_url.into());
+        self
+    }
+    pub fn with_expires_at(mut self, expires_at: Option<DateTime<Utc>>) -> Self {
+        self.expires_at = Some(expires_at);
+        self
+    }
+    pub fn with_active(mut self, active: bool) -> Self {
+        self.active = Some(active);
+        self
+    }
+    pub fn set_verify(mut self) -> Self {
+        self.verify = true;
+        self
+    }
+}
+
 pub struct HealthView {
     pub entries: Vec<SecretEntry>,
     pub report: HealthReport,

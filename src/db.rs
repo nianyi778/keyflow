@@ -495,3 +495,211 @@ impl Database {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::Crypto;
+    use crate::models::ListFilter;
+    use chrono::Utc;
+
+    fn test_crypto() -> Crypto {
+        let salt = Crypto::generate_salt();
+        Crypto::new("test-password", &salt).unwrap()
+    }
+
+    fn test_db() -> (Database, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = Database::open(db_path.to_str().unwrap(), test_crypto()).unwrap();
+        (db, dir)
+    }
+
+    fn make_entry(name: &str, env_var: &str, provider: &str) -> SecretEntry {
+        let now = Utc::now();
+        SecretEntry {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            env_var: env_var.to_string(),
+            provider: provider.to_string(),
+            account_name: String::new(),
+            org_name: String::new(),
+            description: String::new(),
+            source: "manual".to_string(),
+            environment: String::new(),
+            permission_profile: String::new(),
+            scopes: vec![],
+            projects: vec![],
+            apply_url: String::new(),
+            expires_at: None,
+            created_at: now,
+            updated_at: now,
+            last_used_at: None,
+            last_verified_at: Some(now),
+            is_active: true,
+        }
+    }
+
+    #[test]
+    fn add_and_retrieve_secret() {
+        let (db, _dir) = test_db();
+        let entry = make_entry("openai-key", "OPENAI_API_KEY", "openai");
+        db.add_secret(&entry, "sk-abc123").unwrap();
+        let value = db.get_secret_value(&entry.id).unwrap();
+        assert_eq!(value, "sk-abc123");
+    }
+
+    #[test]
+    fn list_secrets_filters_by_provider() {
+        let (db, _dir) = test_db();
+        let e1 = make_entry("openai-1", "OPENAI_API_KEY", "openai");
+        let e2 = make_entry("stripe-1", "STRIPE_SECRET_KEY", "stripe");
+        db.add_secret(&e1, "sk-a").unwrap();
+        db.add_secret(&e2, "sk-s").unwrap();
+        let openai = db
+            .list_secrets(&ListFilter {
+                provider: Some("openai".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(openai.len(), 1);
+        assert_eq!(openai[0].name, "openai-1");
+    }
+
+    #[test]
+    fn list_secrets_filters_by_project() {
+        let (db, _dir) = test_db();
+        let mut entry = make_entry("key-1", "API_KEY", "other");
+        entry.projects = vec!["my-app".to_string()];
+        db.add_secret(&entry, "secret-value").unwrap();
+        let project_secrets = db
+            .list_secrets(&ListFilter {
+                project: Some("my-app".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(project_secrets.len(), 1);
+        let no_match = db
+            .list_secrets(&ListFilter {
+                project: Some("other-project".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(no_match.len(), 0);
+    }
+
+    #[test]
+    fn list_secrets_excludes_inactive_by_default() {
+        let (db, _dir) = test_db();
+        let mut active = make_entry("active-key", "ACTIVE", "other");
+        let mut inactive = make_entry("inactive-key", "INACTIVE", "other");
+        inactive.is_active = false;
+        db.add_secret(&active, "val1").unwrap();
+        db.add_secret(&inactive, "val2").unwrap();
+        let visible = db.list_secrets(&ListFilter::default()).unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].name, "active-key");
+        let all = db
+            .list_secrets(&ListFilter {
+                inactive: true,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn remove_secret() {
+        let (db, _dir) = test_db();
+        let entry = make_entry("to-delete", "DELETE_ME", "other");
+        db.add_secret(&entry, "value").unwrap();
+        assert!(db.remove_secret(&entry.id).unwrap());
+        assert!(db.get_secret_by_id(&entry.id).is_err());
+        assert!(!db.remove_secret("nonexistent-id").unwrap());
+    }
+
+    #[test]
+    fn update_secret_value() {
+        let (db, _dir) = test_db();
+        let entry = make_entry("my-key", "MY_KEY", "other");
+        db.add_secret(&entry, "old-value").unwrap();
+        db.update_secret_value(&entry.id, "new-value").unwrap();
+        let value = db.get_secret_value(&entry.id).unwrap();
+        assert_eq!(value, "new-value");
+    }
+
+    #[test]
+    fn search_secrets() {
+        let (db, _dir) = test_db();
+        let e1 = make_entry("openai-key", "OPENAI_API_KEY", "openai");
+        let e2 = make_entry("stripe-key", "STRIPE_SECRET_KEY", "stripe");
+        db.add_secret(&e1, "sk-o").unwrap();
+        db.add_secret(&e2, "sk-s").unwrap();
+        let results = db.search_secrets("openai").unwrap();
+        assert_eq!(results.len(), 1);
+        let results = db.search_secrets("stripe").unwrap();
+        assert_eq!(results.len(), 1);
+        let results = db.search_secrets("nonexistent").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn get_all_for_env_returns_pairs() {
+        let (db, _dir) = test_db();
+        let e1 = make_entry("key-1", "KEY_A", "provider");
+        let e2 = make_entry("key-2", "KEY_B", "provider");
+        db.add_secret(&e1, "val-a").unwrap();
+        db.add_secret(&e2, "val-b").unwrap();
+        let pairs = db.get_all_for_env(None).unwrap();
+        assert_eq!(pairs.len(), 2);
+        let keys: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"KEY_A"));
+        assert!(keys.contains(&"KEY_B"));
+    }
+
+    #[test]
+    fn update_secret_metadata_provider() {
+        let (db, _dir) = test_db();
+        let entry = make_entry("my-key", "MY_KEY", "old-provider");
+        db.add_secret(&entry, "value").unwrap();
+        db.update_secret_metadata(
+            &entry.id,
+            &MetadataUpdate {
+                provider: Some("new-provider"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let updated = db.get_secret_by_id(&entry.id).unwrap();
+        assert_eq!(updated.provider, "new-provider");
+    }
+
+    #[test]
+    fn update_secret_metadata_projects() {
+        let (db, _dir) = test_db();
+        let entry = make_entry("my-key", "MY_KEY", "provider");
+        db.add_secret(&entry, "value").unwrap();
+        let projects = vec!["project-a".to_string(), "project-b".to_string()];
+        db.update_secret_metadata(
+            &entry.id,
+            &MetadataUpdate {
+                projects: Some(&projects),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let updated = db.get_secret_by_id(&entry.id).unwrap();
+        assert_eq!(updated.projects, projects);
+    }
+
+    #[test]
+    fn get_secrets_by_name() {
+        let (db, _dir) = test_db();
+        let entry = make_entry("same-name", "KEY_A", "provider");
+        db.add_secret(&entry, "val").unwrap();
+        let found = db.get_secrets_by_name("same-name").unwrap();
+        assert_eq!(found.len(), 1);
+        let not_found = db.get_secrets_by_name("nonexistent").unwrap();
+        assert!(not_found.is_empty());
+    }
+}
