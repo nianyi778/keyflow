@@ -13,6 +13,23 @@
 
 </div>
 
+## Changelog
+
+### v0.8.0 (2026-04-03)
+
+- **SECURITY**: `kf get` masks values by default, `--raw` reveals full value
+- **SECURITY**: `kf run` help text warns about environment variable visibility
+- **BUG FIX**: Non-TTTY environments no longer panic on interactive secret selection
+- **CODE**: Refactored `cmd_health` into 11 focused functions
+- **CODE**: Deduplicated `SyncEntry` by embedding `SecretEntry` with `Deref`
+- **CODE**: Data-driven project detection loop (6 manifest types, 56% less code)
+- **CODE**: `SecretUpdate` builder pattern for chained method calls
+- **ARCH**: Background sync push uses non-interactive passphrase, skips gracefully when vault is locked
+- **TEST**: Added 23 new tests (crypto 11, db 11, CLI 5) — total 80 tests
+- **SITE**: Landing page at [keyflow.divinations.top](https://keyflow.divinations.top)
+
+---
+
 ## Install
 
 ```bash
