@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 1200px;
+    height: 630px;
+    overflow: hidden;
+    background: #0F172A;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Menlo', monospace;
+    display: flex;
+    align-items: stretch;
+  }
+
+  /* subtle grid bg */
+  body::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(56,189,248,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(56,189,248,0.04) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+  }
+
+  /* glow blobs */
+  .glow-green {
+    position: absolute;
+    width: 420px;
+    height: 420px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(34,197,94,0.15) 0%, transparent 70%);
+    top: -100px;
+    left: -80px;
+    pointer-events: none;
+  }
+  .glow-blue {
+    position: absolute;
+    width: 340px;
+    height: 340px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(56,189,248,0.12) 0%, transparent 70%);
+    bottom: -60px;
+    right: 60px;
+    pointer-events: none;
+  }
+
+  /* LEFT PANEL */
+  .left {
+    position: relative;
+    flex: 0 0 560px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 60px 56px;
+    z-index: 1;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: rgba(34,197,94,0.1);
+    border: 1px solid rgba(34,197,94,0.25);
+    border-radius: 999px;
+    padding: 5px 14px;
+    margin-bottom: 28px;
+    width: fit-content;
+  }
+  .badge-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #22C55E;
+  }
+  .badge-text {
+    font-size: 11px;
+    font-weight: 600;
+    color: #22C55E;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .logo-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .logo-icon {
+    width: 48px;
+    height: 48px;
+    background: linear-gradient(135deg, #22C55E, #16A34A);
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 20px rgba(34,197,94,0.35);
+  }
+  .logo-name {
+    font-size: 42px;
+    font-weight: 700;
+    color: #F8FAFC;
+    letter-spacing: -0.02em;
+  }
+  .logo-name span {
+    background: linear-gradient(90deg, #22C55E, #38BDF8);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .tagline {
+    font-size: 17px;
+    color: #94A3B8;
+    font-family: 'IBM Plex Sans', -apple-system, sans-serif;
+    line-height: 1.6;
+    margin-bottom: 36px;
+    max-width: 400px;
+  }
+  .tagline strong {
+    color: #CBD5E1;
+    font-weight: 600;
+  }
+
+  .features {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .feature-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: 'IBM Plex Sans', -apple-system, sans-serif;
+  }
+  .feature-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .feature-text {
+    font-size: 14px;
+    color: #94A3B8;
+  }
+  .feature-text code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: #38BDF8;
+    background: rgba(56,189,248,0.08);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  /* DIVIDER */
+  .divider {
+    position: absolute;
+    left: 560px;
+    top: 40px;
+    bottom: 40px;
+    width: 1px;
+    background: linear-gradient(to bottom, transparent, #334155 20%, #334155 80%, transparent);
+    z-index: 1;
+  }
+
+  /* RIGHT PANEL */
+  .right {
+    position: relative;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 50px 52px;
+    z-index: 1;
+  }
+
+  .terminal {
+    background: #1E293B;
+    border: 1px solid #334155;
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04);
+  }
+  .terminal-bar {
+    background: #0F172A;
+    border-bottom: 1px solid #334155;
+    padding: 11px 16px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .dot-r { width: 12px; height: 12px; border-radius: 50%; background: #EF4444; }
+  .dot-y { width: 12px; height: 12px; border-radius: 50%; background: #F59E0B; }
+  .dot-g { width: 12px; height: 12px; border-radius: 50%; background: #22C55E; }
+  .terminal-title {
+    margin-left: auto;
+    margin-right: auto;
+    font-size: 11px;
+    color: #475569;
+    letter-spacing: 0.04em;
+  }
+  .terminal-body {
+    padding: 20px 22px;
+    font-size: 13px;
+    line-height: 2;
+  }
+  .t-prompt { color: #22C55E; }
+  .t-cmd { color: #38BDF8; }
+  .t-arg { color: #F8FAFC; }
+  .t-flag { color: #A78BFA; }
+  .t-val { color: #FB923C; }
+  .t-ok { color: #22C55E; }
+  .t-dim { color: #475569; }
+  .t-line { display: block; margin: 2px 0; }
+  .t-gap { display: block; height: 6px; }
+
+  /* TECH BADGES bottom of right */
+  .tech-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 18px;
+    flex-wrap: wrap;
+  }
+  .tech-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid #334155;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: #64748B;
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-weight: 500;
+  }
+  .tech-badge .tb-icon { font-size: 12px; }
+
+  /* URL bottom left */
+  .url-label {
+    position: absolute;
+    bottom: 28px;
+    left: 56px;
+    font-size: 12px;
+    color: #334155;
+    font-family: 'IBM Plex Sans', sans-serif;
+    z-index: 1;
+  }
+</style>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+
+<div class="glow-green"></div>
+<div class="glow-blue"></div>
+<div class="divider"></div>
+
+<!-- LEFT -->
+<div class="left">
+  <div class="badge">
+    <div class="badge-dot"></div>
+    <span class="badge-text">Open Source · Free · v0.8.0</span>
+  </div>
+
+  <div class="logo-row">
+    <div class="logo-icon">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+      </svg>
+    </div>
+    <div class="logo-name">Key<span>Flow</span></div>
+  </div>
+
+  <p class="tagline">The <strong>developer key vault</strong> for the AI era.<br/>Encrypted, searchable, project-aware.</p>
+
+  <div class="features">
+    <div class="feature-item">
+      <div class="feature-dot" style="background:#22C55E"></div>
+      <span class="feature-text">Store &amp; search API keys across 20+ providers</span>
+    </div>
+    <div class="feature-item">
+      <div class="feature-dot" style="background:#38BDF8"></div>
+      <span class="feature-text">Inject with <code>kf run</code> — plaintext never hits disk</span>
+    </div>
+    <div class="feature-item">
+      <div class="feature-dot" style="background:#A78BFA"></div>
+      <span class="feature-text">MCP server for Claude, Cursor &amp; Windsurf</span>
+    </div>
+    <div class="feature-item">
+      <div class="feature-dot" style="background:#FB923C"></div>
+      <span class="feature-text">E2E encrypted cloud sync via Cloudflare</span>
+    </div>
+  </div>
+</div>
+
+<!-- RIGHT -->
+<div class="right">
+  <div class="terminal">
+    <div class="terminal-bar">
+      <div class="dot-r"></div>
+      <div class="dot-y"></div>
+      <div class="dot-g"></div>
+      <span class="terminal-title">~/projects/myapp — kf</span>
+    </div>
+    <div class="terminal-body">
+      <span class="t-line"><span class="t-prompt">$</span> <span class="t-cmd">kf add</span> <span class="t-arg">OPENAI_API_KEY</span> <span class="t-val">sk-xxx</span> <span class="t-flag">--provider</span> <span class="t-arg">openai</span></span>
+      <span class="t-line"><span class="t-ok">✓</span> <span class="t-arg">Stored OPENAI_API_KEY</span> <span class="t-dim">(openai · expires 2027-01)</span></span>
+      <span class="t-gap"></span>
+      <span class="t-line"><span class="t-prompt">$</span> <span class="t-cmd">kf run</span> <span class="t-flag">--project</span> <span class="t-arg">myapp</span> <span class="t-flag">--</span> <span class="t-cmd">npm start</span></span>
+      <span class="t-line"><span class="t-ok">✓</span> <span class="t-arg">Injected 12 keys into myapp</span></span>
+      <span class="t-line"><span class="t-dim">  Server running on http://localhost:3000</span></span>
+      <span class="t-gap"></span>
+      <span class="t-line"><span class="t-prompt">$</span> <span class="t-cmd">kf health</span></span>
+      <span class="t-line"><span class="t-dim">  ● 2 expiring in 30d &nbsp; ● 1 unverified &nbsp; ● 47 healthy</span></span>
+    </div>
+  </div>
+
+  <div class="tech-row">
+    <span class="tech-badge"><span class="tb-icon">🦀</span> Built with Rust</span>
+    <span class="tech-badge"><span class="tb-icon">🔐</span> AES-256-GCM</span>
+    <span class="tech-badge"><span class="tb-icon">🤖</span> MCP Compatible</span>
+    <span class="tech-badge"><span class="tb-icon">☁️</span> Cloudflare Sync</span>
+  </div>
+</div>
+
+<div class="url-label">keyflow.divinations.top</div>
+
+</body>
+</html>

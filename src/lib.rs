@@ -64,6 +64,7 @@ fn dispatch_command(cli: Cli) -> Result<()> {
         Commands::Remove { name, force, purge, project } => commands::cmd_remove(name, force, purge, project),
         Commands::Update {
             name,
+            rename,
             value,
             provider,
             account,
@@ -81,6 +82,7 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             project_filter,
         } => commands::cmd_update(commands::UpdateArgs {
             name,
+            rename,
             value,
             provider,
             account,

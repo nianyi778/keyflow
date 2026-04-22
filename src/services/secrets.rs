@@ -83,6 +83,7 @@ pub struct SecretDraft {
 
 #[derive(Default)]
 pub struct SecretUpdate {
+    pub name: Option<String>,
     pub value: Option<String>,
     pub provider: Option<String>,
     pub account_name: Option<String>,
@@ -949,6 +950,14 @@ impl<'a> SecretService<'a> {
     }
 
     pub fn update_secret(&self, id: &str, update: SecretUpdate) -> Result<()> {
+        if let Some(new_name) = &update.name {
+            let conflicts = self.db.get_secrets_by_name(new_name)?;
+            let conflict = conflicts.iter().find(|e| e.id != id);
+            if conflict.is_some() {
+                anyhow::bail!("A secret named '{}' already exists", new_name);
+            }
+        }
+
         if let Some(value) = update.value {
             self.db.update_secret_value(id, &value)?;
         }
@@ -962,6 +971,7 @@ impl<'a> SecretService<'a> {
         self.db.update_secret_metadata(
             id,
             &MetadataUpdate {
+                name: update.name.as_deref(),
                 provider: update.provider.as_deref(),
                 account_name: update.account_name.as_deref(),
                 org_name: update.org_name.as_deref(),
@@ -1203,6 +1213,7 @@ impl<'a> SecretService<'a> {
                         self.db.update_secret_metadata(
                             &conflicting.id,
                             &MetadataUpdate {
+                                name: None,
                                 provider: Some(provider),
                                 account_name: Some(account_name),
                                 description: None,

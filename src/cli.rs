@@ -135,6 +135,9 @@ pub enum Commands {
     Update {
         /// Secret name (omit to select interactively)
         name: Option<String>,
+        /// Rename this secret to a new name
+        #[arg(long)]
+        rename: Option<String>,
         /// New value
         #[arg(long)]
         value: Option<String>,

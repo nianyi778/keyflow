@@ -7,6 +7,7 @@ use crate::models::{ListFilter, SecretEntry};
 
 #[derive(Default)]
 pub struct MetadataUpdate<'a> {
+    pub name: Option<&'a str>,
     pub provider: Option<&'a str>,
     pub account_name: Option<&'a str>,
     pub org_name: Option<&'a str>,
@@ -273,6 +274,9 @@ impl Database {
             set_clauses.push(format!("{} = ?{}", column, bind_values.len()));
         };
 
+        if let Some(v) = update.name {
+            push("name", v.to_string());
+        }
         if let Some(v) = update.provider {
             push("provider", v.to_string());
         }

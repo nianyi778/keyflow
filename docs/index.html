@@ -3,12 +3,45 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>KeyFlow — Developer Key Vault</title>
-  <meta name="description" content="Developer key vault — store once, search fast, reuse everywhere, AI-safe. Encrypted CLI vault with MCP integration, per-project keys, and cloud sync." />
-  <meta property="og:title" content="KeyFlow — Developer Key Vault" />
-  <meta property="og:description" content="Store once, search fast, reuse everywhere, AI-safe." />
+  <title>KeyFlow — Developer Key Vault | API Key Manager CLI</title>
+  <meta name="description" content="KeyFlow is an encrypted developer key vault and API key manager CLI. Store API keys once, search fast, inject into projects with kf run. MCP integration for AI coding assistants. Free, open-source, local-first." />
+  <link rel="canonical" href="https://keyflow.divinations.top" />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="KeyFlow — Developer Key Vault | API Key Manager CLI" />
+  <meta property="og:description" content="Encrypted CLI vault for developers. Store API keys once, search by provider or project, inject at runtime. MCP-compatible for Claude, Cursor, Windsurf." />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://keyflow.divinations.top" />
+  <meta property="og:image" content="https://keyflow.divinations.top/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:site_name" content="KeyFlow" />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="KeyFlow — Developer Key Vault" />
+  <meta name="twitter:description" content="Encrypted CLI vault for developers. Store API keys once, search by provider or project, inject at runtime. MCP-compatible." />
+  <meta name="twitter:image" content="https://keyflow.divinations.top/og-image.png" />
+
+  <!-- JSON-LD Structured Data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "KeyFlow",
+    "description": "Encrypted CLI developer key vault and API key manager. Store once, search fast, reuse everywhere. MCP integration for AI coding assistants.",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "macOS, Linux",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "url": "https://keyflow.divinations.top",
+    "downloadUrl": "https://github.com/nianyi778/keyflow",
+    "softwareVersion": "0.8.0",
+    "license": "https://opensource.org/licenses/MIT",
+    "author": { "@type": "Person", "name": "nianyi778" },
+    "keywords": "api key manager, developer secrets manager, cli vault, dotenv alternative, MCP secrets, encrypted key storage"
+  }
+  </script>
+
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -277,7 +310,7 @@
           </h1>
 
           <p class="font-body text-text-secondary text-lg sm:text-xl leading-relaxed max-w-lg mb-8">
-            Store once, search fast, reuse everywhere. Encrypted CLI vault with per-project isolation, AI-safe MCP integration, and cloud sync.
+            The open-source API key manager and developer secrets CLI. Encrypted local vault, per-project isolation, <code class="text-accent font-mono text-base">kf run</code> runtime injection, and MCP integration for Claude &amp; Cursor. The dotenv alternative that actually scales.
           </p>
 
           <div class="flex flex-wrap gap-3">
@@ -364,7 +397,7 @@
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           </div>
           <h3 class="font-heading font-bold text-xl text-text-primary mb-2">Store &amp; Search</h3>
-          <p class="font-body text-text-secondary text-sm leading-relaxed mb-5">Encrypted vault with fuzzy search. Add keys with provider auto-detection for 20+ services. Find anything instantly.</p>
+          <p class="font-body text-text-secondary text-sm leading-relaxed mb-5">Encrypted API key storage with fuzzy search across provider, project, and description. Auto-detects 20+ providers. Replaces scattered <code class="text-accent font-mono text-xs">.env</code> files with a single searchable vault.</p>
           <div class="bg-bg rounded-lg p-4 font-mono text-xs leading-6 overflow-x-auto">
             <span class="prompt">$</span> <span class="cmd">kf add</span> <span class="string">OPENAI_API_KEY</span> <span class="string">sk-xxx</span> <span class="flag">--provider</span> <span class="string">openai</span><br/>
             <span class="success">&#10003; Stored OPENAI_API_KEY (openai)</span><br/>
@@ -411,8 +444,8 @@
           <div class="w-10 h-10 rounded-lg bg-[#FB923C]/10 flex items-center justify-center mb-5">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FB923C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
           </div>
-          <h3 class="font-heading font-bold text-xl text-text-primary mb-2">Military-Grade Security</h3>
-          <p class="font-body text-text-secondary text-sm leading-relaxed mb-5">AES-256-GCM encryption, Argon2 key derivation. Runtime injection means plaintext never hits disk. Lock your vault instantly.</p>
+          <h3 class="font-heading font-bold text-xl text-text-primary mb-2">AES-256-GCM · Argon2 · Local-First</h3>
+          <p class="font-body text-text-secondary text-sm leading-relaxed mb-5">Encrypted key storage with Argon2 key derivation. Runtime injection means plaintext never touches disk. Lock your vault instantly — your secrets never leave your machine.</p>
           <div class="bg-bg rounded-lg p-4 font-mono text-xs leading-6 overflow-x-auto">
             <span class="comment"># Secrets injected at runtime, never written to disk</span><br/>
             <span class="prompt">$</span> <span class="cmd">kf run</span> <span class="flag">--project</span> <span class="string">myapp</span> <span class="flag">--</span> <span class="cmd">npm start</span><br/>

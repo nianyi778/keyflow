@@ -677,6 +677,7 @@ fn apply_remote_entry(db: &Database, local: &SecretEntry, remote: &SyncEntry) ->
     db.update_secret_metadata(
         &local.id,
         &MetadataUpdate {
+            name: None,
             provider: Some(&remote.provider),
             account_name: Some(&remote.account_name),
             org_name: Some(&remote.org_name),

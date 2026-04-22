@@ -47,6 +47,7 @@ pub struct AddArgs {
 
 pub struct UpdateArgs {
     pub name: Option<String>,
+    pub rename: Option<String>,
     pub value: Option<String>,
     pub provider: Option<String>,
     pub account: Option<String>,
@@ -434,6 +435,7 @@ pub fn cmd_remove(
         service.update_secret(
             &entry.id,
             SecretUpdate {
+                name: None,
                 value: None,
                 provider: None,
                 account_name: None,
@@ -471,6 +473,7 @@ pub fn cmd_remove(
 pub fn cmd_update(args: UpdateArgs) -> Result<()> {
     let UpdateArgs {
         name,
+        rename,
         value,
         provider,
         account,
@@ -493,9 +496,12 @@ pub fn cmd_update(args: UpdateArgs) -> Result<()> {
     let scopes_vec = scopes.map(|s| parse_csv(&s));
     let projects_vec = projects.map(|p| parse_csv(&p));
     let had_value_update = value.is_some();
+    let had_rename = rename.is_some();
+    let new_name = rename.clone();
     service.update_secret(
         &entry.id,
         SecretUpdate {
+            name: rename,
             value,
             provider,
             account_name: account,
@@ -513,7 +519,14 @@ pub fn cmd_update(args: UpdateArgs) -> Result<()> {
         },
     )?;
 
-    if verify && had_value_update {
+    if had_rename {
+        println!(
+            "{} Renamed '{}' → '{}'",
+            style("✓").green().bold(),
+            entry.name,
+            style(new_name.as_deref().unwrap_or("")).cyan()
+        );
+    } else if verify && had_value_update {
         println!(
             "{} Secret value verified and metadata updated for '{}'",
             style("✓").green().bold(),
@@ -1092,6 +1105,7 @@ pub fn cmd_verify(name: Option<String>, all: bool, project: Option<String>) -> R
         service.update_secret(
             &entry.id,
             SecretUpdate {
+                name: None,
                 value: None,
                 provider: None,
                 account_name: None,
