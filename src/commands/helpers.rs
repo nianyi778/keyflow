@@ -3,6 +3,8 @@ use chrono::{NaiveDate, TimeZone, Utc};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+type ManifestParser = fn(&str) -> Option<String>;
+
 pub(crate) const SKIP_VARS: &[&str] = &[
     "PATH",
     "HOME",
@@ -124,7 +126,7 @@ pub(crate) fn discover_project_context(start_dir: &Path) -> Option<ProjectContex
     }
 
     for dir in start.ancestors() {
-        let manifest_types: &[(&str, fn(&str) -> Option<String>)] = &[
+        let manifest_types: &[(&str, ManifestParser)] = &[
             ("package.json", parse_project_name_from_package_json),
             ("Cargo.toml", parse_project_name_from_cargo_toml),
             ("pyproject.toml", parse_project_name_from_pyproject_toml),
