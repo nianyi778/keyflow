@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-04-22
+
+### Added
+
+- `kf update --rename <new-name>` — rename a key in-place without delete + recreate
+- Uniqueness validation for rename at the service layer (returns an error if the new name conflicts)
+- Open Graph image (1200×630 PNG) for social sharing
+- `sitemap.xml` and `robots.txt` for search engine indexing
+- Twitter Card and JSON-LD `SoftwareApplication` structured data on the landing page
+
+### Changed
+
+- Landing page: improved meta description, canonical URL, and keyword density for SEO
+- Feature copy: "Military-Grade Security" → "AES-256-GCM · Argon2 · Local-First"
+
 ## [0.6.0] - 2026-03-20
 
 ### Added

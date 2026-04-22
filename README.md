@@ -15,6 +15,12 @@
 
 ## Changelog
 
+### v0.9.0 (2026-04-22)
+
+- **FEAT**: `kf update --rename <new-name>` — rename keys in-place (no more delete + recreate)
+- **SEO**: og:image, sitemap.xml, robots.txt, JSON-LD structured data on landing page
+- **SITE**: Improved meta description, canonical URL, Twitter Card
+
 ### v0.8.0 (2026-04-03)
 
 - **SECURITY**: `kf get` masks values by default, `--raw` reveals full value
