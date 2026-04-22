@@ -5,6 +5,9 @@
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],
   "account_id": "ad48867bb0bbd3ccce8fb30e1ea42a81",
+  "assets": {
+    "directory": "../docs"
+  },
   "routes": [
     {
       "pattern": "keyflow.divinations.top",
