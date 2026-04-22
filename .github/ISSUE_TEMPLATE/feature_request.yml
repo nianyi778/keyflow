@@ -1,0 +1,40 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening a request, check the [TODO.md](../blob/master/TODO.md) to see if it's already planned or explicitly excluded.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the workflow or pain point this feature would address.
+      placeholder: "When I have 50+ keys, I have to scroll through the list to find..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would you like this to work? CLI flags, command names, output format?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds you've tried?
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Does this fit the project scope?
+      description: KeyFlow focuses on local-first storage, search, and reuse. See [product-architecture.md](../blob/master/docs/product-architecture.md).
+      options:
+        - label: This is about storing, finding, or reusing secrets — not deploying or managing them
+          required: false

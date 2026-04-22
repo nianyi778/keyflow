@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/nianyi778/keyflow/security/advisories/new
+    about: Report a security issue privately
+  - name: Question / Discussion
+    url: https://github.com/nianyi778/keyflow/discussions
+    about: Ask a question or start a discussion

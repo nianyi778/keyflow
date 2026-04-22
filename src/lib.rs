@@ -60,8 +60,18 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             expiring,
             inactive,
         } => commands::cmd_list(provider, project, expiring, inactive),
-        Commands::Get { name, raw, copy, project } => commands::cmd_get(name, raw, copy, project),
-        Commands::Remove { name, force, purge, project } => commands::cmd_remove(name, force, purge, project),
+        Commands::Get {
+            name,
+            raw,
+            copy,
+            project,
+        } => commands::cmd_get(name, raw, copy, project),
+        Commands::Remove {
+            name,
+            force,
+            purge,
+            project,
+        } => commands::cmd_remove(name, force, purge, project),
         Commands::Update {
             name,
             rename,
