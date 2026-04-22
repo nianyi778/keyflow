@@ -434,7 +434,10 @@ fn is_homebrew_install() -> bool {
     // Check if keyflow binary lives under a Homebrew Cellar path
     if let Ok(exe) = std::env::current_exe() {
         let path = exe.to_string_lossy();
-        if path.contains("/Cellar/") || path.contains("/homebrew/") || path.contains("/opt/homebrew/") {
+        if path.contains("/Cellar/")
+            || path.contains("/homebrew/")
+            || path.contains("/opt/homebrew/")
+        {
             return true;
         }
     }
