@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use console::style;
 use dialoguer::{Confirm, Password};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -86,7 +87,8 @@ fn save_sync_config(config: &SyncConfig) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     let raw = serde_json::to_string_pretty(config)?;
-    fs::write(&path, raw).with_context(|| {
+    // sync.json holds the long-lived bearer token; keep it owner-only.
+    crate::secure_fs::write_private(&path, raw).with_context(|| {
         format!(
             "Failed to write sync configuration to {}",
             path.to_string_lossy()
@@ -109,6 +111,23 @@ fn decrypt_entry(blob: &str, crypto: &Crypto) -> Result<SyncEntry> {
     let entry: SyncEntry =
         serde_json::from_slice(&decrypted).context("Invalid decrypted sync entry")?;
     Ok(entry)
+}
+
+/// Build the JSON entry the worker expects for a push. The worker validates
+/// `is_deleted` strictly as the integer `0` or `1` (never a JSON boolean), so
+/// it is encoded as an integer here.
+fn push_entry_json(
+    id: &str,
+    encrypted_blob: &str,
+    updated_at: &DateTime<Utc>,
+    is_active: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "encrypted_blob": encrypted_blob,
+        "updated_at": updated_at,
+        "is_deleted": i32::from(!is_active),
+    })
 }
 
 fn make_sync_crypto(passphrase: &str, salt: &str) -> Result<Crypto> {
@@ -227,12 +246,42 @@ pub fn cmd_sync(sub: SyncCommands) -> Result<()> {
     }
 }
 
+/// Reject sync endpoints that would transmit the bearer token in cleartext.
+/// HTTPS is required except for loopback hosts used in local development.
+fn validate_sync_endpoint(endpoint: &str) -> Result<()> {
+    if let Some(rest) = endpoint.strip_prefix("https://") {
+        if rest.is_empty() {
+            bail!("Sync endpoint is missing a host");
+        }
+        return Ok(());
+    }
+    if let Some(rest) = endpoint.strip_prefix("http://") {
+        let host = rest.split(['/', ':']).next().unwrap_or("");
+        if matches!(host, "localhost" | "127.0.0.1" | "[::1]") {
+            return Ok(());
+        }
+        bail!(
+            "Sync endpoint must use https:// — plain HTTP would expose your auth token. \
+             Only http://localhost is allowed, for local development."
+        );
+    }
+    bail!("Sync endpoint must start with https:// (got `{endpoint}`)");
+}
+
 fn cmd_sync_init(endpoint: String) -> Result<()> {
     let endpoint = endpoint.trim_end_matches('/').to_string();
+    validate_sync_endpoint(&endpoint)?;
+
+    // PKCE: prove at poll time that this is the same client that started the
+    // device flow, so a leaked device_code alone cannot be exchanged for a token.
+    let code_verifier =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Crypto::generate_salt());
+    let code_challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(code_verifier.as_bytes()));
 
     let mut start_response = ureq::post(&format!("{}/api/device/start", endpoint))
         .header("Content-Type", "application/json")
-        .send_json(serde_json::json!({}))
+        .send_json(serde_json::json!({ "code_challenge": code_challenge }))
         .map_err(|e| anyhow::anyhow!("Failed to start device authorization: {e}"))?;
     let start_payload: serde_json::Value = start_response
         .body_mut()
@@ -275,7 +324,8 @@ fn cmd_sync_init(endpoint: String) -> Result<()> {
         let poll_result = ureq::post(&format!("{}/api/device/poll", endpoint))
             .header("Content-Type", "application/json")
             .send_json(serde_json::json!({
-                "device_code": &device_code
+                "device_code": &device_code,
+                "code_verifier": &code_verifier
             }));
 
         let mut poll_response = match poll_result {
@@ -442,12 +492,12 @@ fn execute_sync_push(mut config: SyncConfig, sync_crypto: Crypto) -> Result<()> 
             value,
         };
         let encrypted_blob = encrypt_entry(&sync_entry, &sync_crypto)?;
-        payload_entries.push(serde_json::json!({
-            "id": sync_entry.id,
-            "encrypted_blob": encrypted_blob,
-            "updated_at": sync_entry.updated_at,
-            "is_deleted": !sync_entry.is_active,
-        }));
+        payload_entries.push(push_entry_json(
+            &sync_entry.id,
+            &encrypted_blob,
+            &sync_entry.updated_at,
+            sync_entry.is_active,
+        ));
     }
 
     let mut response = ureq::post(&format!("{}/api/push", config.endpoint))
@@ -987,4 +1037,117 @@ fn cmd_sync_conflicts(clear: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_secret_entry() -> SecretEntry {
+        let now = Utc::now();
+        SecretEntry {
+            id: "id-1".to_string(),
+            name: "openai-main".to_string(),
+            env_var: "OPENAI_API_KEY".to_string(),
+            provider: "openai".to_string(),
+            account_name: String::new(),
+            org_name: String::new(),
+            description: String::new(),
+            source: String::new(),
+            environment: String::new(),
+            permission_profile: String::new(),
+            scopes: Vec::new(),
+            projects: vec!["demo".to_string()],
+            apply_url: String::new(),
+            expires_at: None,
+            created_at: now,
+            updated_at: now,
+            last_used_at: None,
+            last_verified_at: None,
+            is_active: true,
+        }
+    }
+
+    #[test]
+    fn validate_sync_endpoint_accepts_https() {
+        assert!(validate_sync_endpoint("https://keyflow.example.com").is_ok());
+        assert!(validate_sync_endpoint("https://keyflow.divinations.top").is_ok());
+    }
+
+    #[test]
+    fn validate_sync_endpoint_allows_http_loopback_only() {
+        assert!(validate_sync_endpoint("http://localhost:8787").is_ok());
+        assert!(validate_sync_endpoint("http://127.0.0.1:8787").is_ok());
+        assert!(validate_sync_endpoint("http://example.com").is_err());
+    }
+
+    #[test]
+    fn validate_sync_endpoint_rejects_missing_or_bad_scheme() {
+        assert!(validate_sync_endpoint("keyflow.example.com").is_err());
+        assert!(validate_sync_endpoint("ftp://example.com").is_err());
+        assert!(validate_sync_endpoint("https://").is_err());
+    }
+
+    #[test]
+    fn push_entry_json_encodes_is_deleted_as_integer() {
+        // Regression guard: the worker rejects a JSON boolean for is_deleted.
+        let ts = Utc::now();
+        let active = push_entry_json("id-1", "blob", &ts, true);
+        assert_eq!(active["is_deleted"], serde_json::json!(0));
+        assert!(!active["is_deleted"].is_boolean());
+
+        let inactive = push_entry_json("id-2", "blob", &ts, false);
+        assert_eq!(inactive["is_deleted"], serde_json::json!(1));
+        assert!(!inactive["is_deleted"].is_boolean());
+    }
+
+    #[test]
+    fn parse_boolish_handles_bool_int_and_string() {
+        use serde_json::json;
+        assert!(parse_boolish(Some(&json!(true))));
+        assert!(!parse_boolish(Some(&json!(false))));
+        assert!(parse_boolish(Some(&json!(1))));
+        assert!(!parse_boolish(Some(&json!(0))));
+        assert!(parse_boolish(Some(&json!("true"))));
+        assert!(parse_boolish(Some(&json!("1"))));
+        assert!(!parse_boolish(Some(&json!("no"))));
+        assert!(!parse_boolish(None));
+    }
+
+    #[test]
+    fn sync_entry_survives_encrypt_decrypt_roundtrip() {
+        let crypto = Crypto::new("sync-pass", b"0123456789abcdef0123456789abcdef").unwrap();
+        let entry = SyncEntry {
+            entry: sample_secret_entry(),
+            value: "sk-secret-value-123".to_string(),
+        };
+        let blob = encrypt_entry(&entry, &crypto).unwrap();
+        let restored = decrypt_entry(&blob, &crypto).unwrap();
+        assert_eq!(restored.name, "openai-main");
+        assert_eq!(restored.value, "sk-secret-value-123");
+    }
+
+    #[test]
+    fn decrypt_entry_rejects_wrong_key() {
+        let crypto = Crypto::new("right", b"0123456789abcdef0123456789abcdef").unwrap();
+        let wrong = Crypto::new("wrong", b"0123456789abcdef0123456789abcdef").unwrap();
+        let entry = SyncEntry {
+            entry: sample_secret_entry(),
+            value: "v".to_string(),
+        };
+        let blob = encrypt_entry(&entry, &crypto).unwrap();
+        assert!(decrypt_entry(&blob, &wrong).is_err());
+    }
+
+    #[test]
+    fn resolve_conflict_is_deterministic_for_cloud_and_local() {
+        assert_eq!(
+            resolve_conflict(&ConflictStrategy::Cloud, "k", "t1", "t2", "l", "r").unwrap(),
+            "cloud"
+        );
+        assert_eq!(
+            resolve_conflict(&ConflictStrategy::Local, "k", "t1", "t2", "l", "r").unwrap(),
+            "local"
+        );
+    }
 }

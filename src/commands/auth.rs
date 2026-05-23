@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use chrono::{DateTime, Utc};
 use console::style;
 use dialoguer::{FuzzySelect, Password};
 use std::fs;
@@ -18,26 +19,77 @@ fn keyfile_path() -> Result<std::path::PathBuf> {
     Ok(get_data_dir()?.join(".passphrase"))
 }
 
-fn read_keyfile() -> Option<String> {
-    let path = keyfile_path().ok()?;
-    fs::read_to_string(&path)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+/// On-disk shape of the cached-passphrase keyfile.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Keyfile {
+    passphrase: String,
+    /// When the cached passphrase expires; `None` means it never expires.
+    #[serde(default)]
+    expires_at: Option<DateTime<Utc>>,
 }
 
-pub fn save_keyfile(passphrase: &str) -> Result<()> {
+fn read_keyfile() -> Option<String> {
+    let path = keyfile_path().ok()?;
+    let raw = fs::read_to_string(&path).ok()?;
+    // Current format is JSON with an optional TTL. Older versions stored the
+    // bare passphrase as plain text; still accept that as a non-expiring cache.
+    let passphrase = match serde_json::from_str::<Keyfile>(&raw) {
+        Ok(keyfile) => {
+            if let Some(expiry) = keyfile.expires_at {
+                if Utc::now() >= expiry {
+                    let _ = fs::remove_file(&path);
+                    return None;
+                }
+            }
+            keyfile.passphrase
+        }
+        Err(_) => raw,
+    };
+    let passphrase = passphrase.trim().to_string();
+    if passphrase.is_empty() {
+        None
+    } else {
+        Some(passphrase)
+    }
+}
+
+/// Persist the master passphrase to the keyfile. `expires_at` of `None` caches
+/// it indefinitely. Only `kf unlock` calls this — KeyFlow never caches the
+/// passphrase implicitly.
+fn save_keyfile(passphrase: &str, expires_at: Option<DateTime<Utc>>) -> Result<()> {
     let path = keyfile_path()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&path, passphrase)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    let keyfile = Keyfile {
+        passphrase: passphrase.to_string(),
+        expires_at,
+    };
+    let raw = serde_json::to_string(&keyfile)?;
+    crate::secure_fs::write_private(&path, raw)
+}
+
+/// Remove any cached passphrase keyfile. Used after the passphrase changes so a
+/// stale keyfile holding the old passphrase cannot linger.
+pub(crate) fn clear_keyfile() -> Result<()> {
+    let path = keyfile_path()?;
+    if path.exists() {
+        fs::remove_file(&path)?;
     }
     Ok(())
+}
+
+/// Cache `passphrase` to the keyfile with a TTL of `ttl_hours` (`0` = no
+/// expiry) and return the computed expiry. Callers must be explicit user
+/// actions (`kf unlock`, `kf setup`) — KeyFlow never caches implicitly.
+pub(crate) fn cache_passphrase(passphrase: &str, ttl_hours: u64) -> Result<Option<DateTime<Utc>>> {
+    let expires_at = if ttl_hours == 0 {
+        None
+    } else {
+        Some(Utc::now() + chrono::Duration::hours(ttl_hours as i64))
+    };
+    save_keyfile(passphrase, expires_at)?;
+    Ok(expires_at)
 }
 
 pub fn cmd_lock() -> Result<()> {
@@ -50,6 +102,53 @@ pub fn cmd_lock() -> Result<()> {
         );
     } else {
         println!("{} Already locked.", style("✓").green().bold());
+    }
+    Ok(())
+}
+
+/// Cache the master passphrase locally so subsequent commands (and the MCP
+/// server) don't prompt. The cache expires after `ttl_hours` hours; `0`
+/// disables expiry. KeyFlow never caches the passphrase unless `kf unlock` is
+/// run explicitly.
+pub fn cmd_unlock(ttl_hours: u64) -> Result<()> {
+    let (data_dir, _config, salt) = load_config()?;
+
+    let passphrase = if let Ok(p) = std::env::var("KEYFLOW_PASSPHRASE") {
+        p
+    } else if std::io::stdin().is_terminal() {
+        Password::new()
+            .with_prompt("KeyFlow passphrase")
+            .interact()?
+    } else {
+        get_passphrase_gui()?
+    };
+    if passphrase.trim().is_empty() {
+        bail!("Passphrase cannot be empty");
+    }
+
+    // Best-effort verification: if the vault holds any secret, confirm the
+    // passphrase actually decrypts it before caching a possibly-wrong value.
+    let crypto = Crypto::new(&passphrase, &salt)?;
+    let db_path = data_dir.join("keyflow.db");
+    let db = Database::open(&db_path, crypto)?;
+    if let Some((_, encrypted)) = db.get_all_raw()?.first() {
+        db.decrypt_raw(encrypted)
+            .map_err(|_| anyhow::anyhow!("Wrong passphrase — vault not unlocked"))?;
+    }
+
+    let expires_at = cache_passphrase(&passphrase, ttl_hours)?;
+
+    match expires_at {
+        Some(expiry) => println!(
+            "{} Vault unlocked. Passphrase cached until {}.",
+            style("✓").green().bold(),
+            style(expiry.format("%Y-%m-%d %H:%M UTC")).dim()
+        ),
+        None => println!(
+            "{} Vault unlocked. Passphrase cached with no expiry — run {} to clear it.",
+            style("✓").green().bold(),
+            style("kf lock").cyan()
+        ),
     }
     Ok(())
 }
@@ -118,20 +217,17 @@ fn get_passphrase_inner(noninteractive: bool) -> Result<String> {
         return Ok(pass);
     }
     if noninteractive {
-        bail!("Vault locked. Run any `kf` command first to unlock, or set KEYFLOW_PASSPHRASE.");
+        bail!("Vault locked. Run `kf unlock` first, or set KEYFLOW_PASSPHRASE.");
     }
     // 3. Interactive terminal prompt
     if std::io::stdin().is_terminal() {
         let pass = Password::new()
             .with_prompt("KeyFlow passphrase")
             .interact()?;
-        let _ = save_keyfile(&pass);
         return Ok(pass);
     }
     // 4. Native OS dialog (for AI tools, MCP, non-terminal contexts)
-    let pass = get_passphrase_gui()?;
-    let _ = save_keyfile(&pass);
-    Ok(pass)
+    get_passphrase_gui()
 }
 
 pub fn load_config() -> Result<(std::path::PathBuf, AppConfig, Vec<u8>)> {
@@ -157,7 +253,7 @@ pub fn open_db() -> Result<Database> {
     let passphrase = get_passphrase()?;
     let crypto = Crypto::new(&passphrase, &salt)?;
     let db_path = data_dir.join("keyflow.db");
-    Database::open(db_path.to_str().unwrap(), crypto)
+    Database::open(&db_path, crypto)
 }
 
 pub(crate) fn resolve_secret(

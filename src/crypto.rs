@@ -1,10 +1,21 @@
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use anyhow::{bail, Result};
+use argon2::{Algorithm, Argon2, Params, Version};
 use rand::Rng;
 
 const NONCE_LEN: usize = 12;
 const KEY_LEN: usize = 32;
+
+// Argon2id KDF parameters, pinned explicitly rather than via `Argon2::default()`
+// so that a future `argon2` crate upgrade which changes the library defaults
+// cannot silently alter the derived key and lock users out of their vaults.
+// These values match the argon2 0.5.x defaults, so existing vaults stay
+// decryptable. Changing any of them requires a migration that re-derives every
+// vault key (see `kf passwd` / `reencrypt_all`).
+const ARGON2_M_COST: u32 = 19_456; // memory, in KiB (19 MiB)
+const ARGON2_T_COST: u32 = 2; // iterations
+const ARGON2_P_COST: u32 = 1; // parallelism
 
 pub struct Crypto {
     cipher: Aes256Gcm,
@@ -13,7 +24,10 @@ pub struct Crypto {
 impl Crypto {
     pub fn new(passphrase: &str, salt: &[u8]) -> Result<Self> {
         let mut key_bytes = [0u8; KEY_LEN];
-        argon2::Argon2::default()
+        let params = Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, None)
+            .map_err(|e| anyhow::anyhow!("Invalid Argon2 parameters: {}", e))?;
+        let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+        argon2
             .hash_password_into(passphrase.as_bytes(), salt, &mut key_bytes)
             .map_err(|e| anyhow::anyhow!("Key derivation failed: {}", e))?;
         let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
@@ -40,9 +54,11 @@ impl Crypto {
         }
         let nonce = Nonce::from_slice(&data[..NONCE_LEN]);
         let ciphertext = &data[NONCE_LEN..];
-        self.cipher
-            .decrypt(nonce, ciphertext)
-            .map_err(|e| anyhow::anyhow!("Decryption failed (wrong passphrase?): {}", e))
+        self.cipher.decrypt(nonce, ciphertext).map_err(|_| {
+            anyhow::anyhow!(
+                "Decryption failed: wrong passphrase, or the data is corrupted or tampered with"
+            )
+        })
     }
 
     pub fn generate_salt() -> Vec<u8> {
@@ -115,6 +131,17 @@ mod tests {
         // Truncate ciphertext portion (keep nonce only)
         let truncated = &encrypted[..NONCE_LEN];
         assert!(crypto.decrypt(truncated).is_err());
+    }
+
+    #[test]
+    fn decrypt_rejects_tampered_ciphertext() {
+        let crypto = make_crypto();
+        let mut encrypted = crypto.encrypt(b"important secret value").unwrap();
+        // Flip a bit in the ciphertext body (past the nonce) — AES-GCM's
+        // authentication tag must reject the modified data.
+        let last = encrypted.len() - 1;
+        encrypted[last] ^= 0x01;
+        assert!(crypto.decrypt(&encrypted).is_err());
     }
 
     #[test]

@@ -15,6 +15,7 @@ use crate::models::{
     find_duplicate_groups, DuplicateGroup, HealthReport, HealthSummary, KeyStatus, ListFilter,
     SecretEntry,
 };
+use crate::services::errors::SecretError;
 
 #[derive(Clone)]
 pub struct ImportSource {
@@ -954,7 +955,11 @@ impl<'a> SecretService<'a> {
             let conflicts = self.db.get_secrets_by_name(new_name)?;
             let conflict = conflicts.iter().find(|e| e.id != id);
             if conflict.is_some() {
-                anyhow::bail!("A secret named '{}' already exists", new_name);
+                return Err(SecretError::AlreadyExists {
+                    name: new_name.clone(),
+                    detail: String::new(),
+                }
+                .into());
             }
         }
 
@@ -1025,21 +1030,21 @@ impl<'a> SecretService<'a> {
         let existing = self.db.get_secrets_by_name(&name)?;
         if draft.projects.is_empty() {
             if existing.iter().any(|e| e.projects.is_empty()) {
-                bail!(
-                    "Secret '{}' already exists as a global key. Use 'kf update {}' to modify.",
-                    name,
-                    name
-                );
+                return Err(SecretError::AlreadyExists {
+                    name: name.clone(),
+                    detail: format!("global key — run `kf update {name}` to modify"),
+                }
+                .into());
             }
         } else {
             for entry in &existing {
                 for project in &draft.projects {
                     if entry.projects.contains(project) {
-                        bail!(
-                            "Secret '{}' already exists for project '{}'. Use 'kf update' to modify.",
-                            name,
-                            project
-                        );
+                        return Err(SecretError::AlreadyExists {
+                            name: name.clone(),
+                            detail: format!("project '{project}' — run `kf update` to modify"),
+                        }
+                        .into());
                     }
                 }
             }
@@ -1081,7 +1086,10 @@ impl<'a> SecretService<'a> {
         }
 
         if !path.is_dir() {
-            bail!("Path not found: {}", path.display());
+            return Err(SecretError::PathNotFound {
+                path: path.display().to_string(),
+            }
+            .into());
         }
 
         let mut files = Vec::new();
@@ -1130,7 +1138,10 @@ impl<'a> SecretService<'a> {
 
         files.sort_by(|a, b| a.path.cmp(&b.path));
         if files.is_empty() {
-            bail!("No .env files found in '{}'", path.display());
+            return Err(SecretError::NoEnvFilesFound {
+                path: path.display().to_string(),
+            }
+            .into());
         }
         Ok(files)
     }
@@ -1547,13 +1558,10 @@ fn readiness_priority(entry: &SecretEntry) -> i32 {
 
 pub fn validate_env_var_name(name: &str) -> Result<()> {
     if name.is_empty() {
-        bail!("Environment variable name cannot be empty");
+        return Err(SecretError::EnvVarNameEmpty.into());
     }
     if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-        bail!(
-            "Invalid environment variable name '{}': only [A-Za-z0-9_] allowed",
-            name
-        );
+        return Err(SecretError::InvalidEnvVarName(name.to_string()).into());
     }
     Ok(())
 }

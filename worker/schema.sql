@@ -4,6 +4,9 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT,
   name TEXT,
   avatar_url TEXT,
+  -- token_version is embedded in every issued JWT and checked on each request.
+  -- Bumping it (see /api/revoke) invalidates all previously issued tokens.
+  token_version INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

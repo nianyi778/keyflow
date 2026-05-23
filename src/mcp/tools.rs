@@ -1,5 +1,7 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use serde_json::{json, Value};
+
+use super::errors::McpProtocolError;
 
 use super::service::{
     parse_args, AddKeyRequest, DeleteKeyRequest, DiscoverProjectRequest, EnvSnippetRequest,
@@ -374,13 +376,17 @@ impl ToolRegistry {
                 ),
                 ToolDefinition::write_with_output(
                     "delete_key",
-                    "Permanently delete a secret from KeyFlow by its name (slug). This action is irreversible.",
+                    "Permanently delete a secret from KeyFlow by its name (slug). This action is irreversible. If several secrets share the name, pass 'project' to choose which one.",
                     json!({
                         "type": "object",
                         "properties": {
                             "name": {
                                 "type": "string",
                                 "description": "Secret slug name as returned by search_keys or list_keys_for_project (e.g. 'finnhub-api-key')."
+                            },
+                            "project": {
+                                "type": "string",
+                                "description": "Project scope. Required only to disambiguate when multiple secrets share the same name."
                             }
                         },
                         "required": ["name"]
@@ -392,7 +398,8 @@ impl ToolRegistry {
                             "name": { "type": "string" },
                             "env_var": { "type": "string" },
                             "message": { "type": "string" },
-                            "error": { "type": ["string", "null"] }
+                            "error": { "type": ["string", "null"] },
+                            "candidates": { "type": "array" }
                         },
                         "required": ["success", "name", "message", "error"]
                     }),
@@ -403,7 +410,7 @@ impl ToolRegistry {
                 ),
                 ToolDefinition::read_with_output(
                     "reuse_env_snippet",
-                    "Build a .env snippet for a project. Values can be masked or returned as real plaintext.",
+                    "Build a .env snippet for a project. Values are masked by default; plaintext is returned only when the KeyFlow MCP server was started with KEYFLOW_MCP_ALLOW_REVEAL=1.",
                     json!({
                         "type": "object",
                         "properties": {
@@ -572,7 +579,7 @@ impl ToolRegistry {
             .tools
             .iter()
             .find(|tool| tool.name == name)
-            .ok_or_else(|| anyhow!("Unknown tool: {name}"))?;
+            .ok_or_else(|| McpProtocolError::UnknownTool(name.to_string()))?;
         (tool.handler)(service, args)
     }
 }

@@ -10,7 +10,7 @@ pub fn test_db() -> (tempfile::TempDir, Database) {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("keyflow.sqlite");
     let crypto = Crypto::new("pass123", b"01234567890123456789012345678901").unwrap();
-    let db = Database::open(db_path.to_str().unwrap(), crypto).unwrap();
+    let db = Database::open(&db_path, crypto).unwrap();
     (dir, db)
 }
 

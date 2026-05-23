@@ -1,10 +1,12 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 
 use crate::db::Database;
+use crate::services::errors::SecretError;
 use crate::services::secrets::SecretService;
 
+use super::errors::McpProtocolError;
 use super::prompts::PromptRegistry;
 use super::service::VaultService;
 use super::tools::ToolRegistry;
@@ -149,6 +151,11 @@ fn handle_prompt_get(
     prompts.get(name, &arguments).map_err(McpError::from)
 }
 
+/// Upper bound on a single inbound MCP message. JSON-RPC messages for a key
+/// vault are tiny; this cap only exists to stop a malicious or buggy peer from
+/// triggering a huge allocation via a forged Content-Length header.
+const MAX_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+
 fn read_message(reader: &mut impl BufRead) -> Result<Option<(Value, MessageFraming)>> {
     let mut content_length = None;
 
@@ -178,16 +185,21 @@ fn read_message(reader: &mut impl BufRead) -> Result<Option<(Value, MessageFrami
         };
 
         if name.trim().eq_ignore_ascii_case("Content-Length") {
-            content_length = Some(
-                value
-                    .trim()
-                    .parse::<usize>()
-                    .map_err(|e| anyhow!("Invalid Content-Length header: {e}"))?,
-            );
+            content_length = Some(value.trim().parse::<usize>().map_err(|e| {
+                McpProtocolError::ParseError(format!("Invalid Content-Length header: {e}"))
+            })?);
         }
     }
 
-    let length = content_length.ok_or_else(|| anyhow!("Missing Content-Length header"))?;
+    let length = content_length
+        .ok_or_else(|| McpProtocolError::ParseError("Missing Content-Length header".to_string()))?;
+    if length > MAX_MESSAGE_BYTES {
+        return Err(McpProtocolError::MessageTooLarge {
+            length,
+            max: MAX_MESSAGE_BYTES,
+        }
+        .into());
+    }
     let mut body = vec![0u8; length];
     reader.read_exact(&mut body)?;
     Ok(Some((
@@ -256,17 +268,23 @@ impl From<anyhow::Error> for McpError {
 }
 
 pub(crate) fn classify_anyhow_error(value: anyhow::Error) -> McpError {
-    let message = value.to_string();
+    if let Some(proto) = value.downcast_ref::<McpProtocolError>() {
+        return classify_protocol_error(proto, value.to_string());
+    }
+    if let Some(secret) = value.downcast_ref::<SecretError>() {
+        return classify_secret_error(secret, value.to_string());
+    }
+    McpError {
+        code: -32000,
+        message: value.to_string(),
+        keyflow_code: "internal_error",
+        hint: None,
+    }
+}
 
-    if message.contains("Missing tool name")
-        || message.contains("Missing resource uri")
-        || message.contains("Missing prompt name")
-        || message.contains("Missing required prompt argument")
-        || message.contains("must be specified")
-        || message.contains("Invalid environment variable name")
-        || message.contains("Environment variable name cannot be empty")
-    {
-        return McpError {
+fn classify_protocol_error(error: &McpProtocolError, message: String) -> McpError {
+    match error {
+        McpProtocolError::MissingArgument(_) => McpError {
             code: -32602,
             message,
             keyflow_code: "invalid_params",
@@ -274,22 +292,16 @@ pub(crate) fn classify_anyhow_error(value: anyhow::Error) -> McpError {
                 "Check the MCP input arguments against the tool, resource, or prompt schema."
                     .to_string(),
             ),
-        };
-    }
-
-    if message.contains("Unknown resource URI") {
-        return McpError {
+        },
+        McpProtocolError::UnknownResourceUri(_) => McpError {
             code: -32001,
             message,
             keyflow_code: "resource_not_found",
             hint: Some(
                 "Call resources/list first, then use one of the advertised URIs.".to_string(),
             ),
-        };
-    }
-
-    if message.contains("Unknown prompt:") {
-        return McpError {
+        },
+        McpProtocolError::UnknownPrompt(_) => McpError {
             code: -32001,
             message,
             keyflow_code: "prompt_not_found",
@@ -297,22 +309,16 @@ pub(crate) fn classify_anyhow_error(value: anyhow::Error) -> McpError {
                 "Call prompts/list first, then request one of the advertised prompt names."
                     .to_string(),
             ),
-        };
-    }
-
-    if message.contains("Unknown tool:") {
-        return McpError {
+        },
+        McpProtocolError::UnknownTool(_) => McpError {
             code: -32001,
             message,
             keyflow_code: "tool_not_found",
             hint: Some(
                 "Call tools/list first, then use one of the advertised tool names.".to_string(),
             ),
-        };
-    }
-
-    if message == "Method not allowed. Use POST /mcp." {
-        return McpError {
+        },
+        McpProtocolError::MethodNotAllowed => McpError {
             code: -32004,
             message,
             keyflow_code: "http_method_not_allowed",
@@ -320,48 +326,43 @@ pub(crate) fn classify_anyhow_error(value: anyhow::Error) -> McpError {
                 "Use POST /mcp for JSON-RPC requests. GET is only supported on /healthz."
                     .to_string(),
             ),
-        };
-    }
-
-    if message == "Not found" {
-        return McpError {
+        },
+        McpProtocolError::HttpNotFound => McpError {
             code: -32001,
             message,
             keyflow_code: "http_not_found",
             hint: Some(
                 "Use POST /mcp for MCP requests or GET /healthz for liveness checks.".to_string(),
             ),
-        };
-    }
-
-    if message.contains("not found") {
-        return McpError {
-            code: -32001,
-            message,
-            keyflow_code: "not_found",
-            hint: Some(
-                "Verify the requested secret, project, provider, or resource exists.".to_string(),
-            ),
-        };
-    }
-
-    if message.contains("Refusing to bind MCP HTTP transport") {
-        return McpError {
+        },
+        McpProtocolError::BindRejected(_) => McpError {
             code: -32003,
             message,
             keyflow_code: "http_bind_rejected",
-            hint: Some("Bind HTTP MCP to 127.0.0.1, localhost, or ::1. Set KEYFLOW_ALLOW_REMOTE_HTTP=1 only if you understand the exposure risk.".to_string()),
-        };
-    }
-
-    if message.contains("Invalid JSON body")
-        || message.contains("Missing HTTP request line")
-        || message.contains("Missing HTTP method")
-        || message.contains("Missing HTTP path")
-        || message.contains("Invalid Content-Length header")
-        || message.contains("Missing Content-Length header")
-    {
-        return McpError {
+            hint: Some(
+                "Bind HTTP MCP to 127.0.0.1, localhost, or ::1. Set KEYFLOW_ALLOW_REMOTE_HTTP=1 only if you understand the exposure risk."
+                    .to_string(),
+            ),
+        },
+        McpProtocolError::OriginNotAllowed => McpError {
+            code: -32003,
+            message,
+            keyflow_code: "origin_rejected",
+            hint: Some(
+                "The MCP HTTP transport rejects browser origins to mitigate DNS-rebinding attacks."
+                    .to_string(),
+            ),
+        },
+        McpProtocolError::InvalidBearerToken => McpError {
+            code: -32003,
+            message,
+            keyflow_code: "unauthorized",
+            hint: Some(
+                "Send `Authorization: Bearer <token>` using the token printed at startup (or set via KEYFLOW_MCP_TOKEN)."
+                    .to_string(),
+            ),
+        },
+        McpProtocolError::ParseError(_) | McpProtocolError::MessageTooLarge { .. } => McpError {
             code: -32700,
             message,
             keyflow_code: "parse_error",
@@ -369,14 +370,37 @@ pub(crate) fn classify_anyhow_error(value: anyhow::Error) -> McpError {
                 "Send a valid JSON-RPC request body and required HTTP or stdio framing headers."
                     .to_string(),
             ),
-        };
+        },
     }
+}
 
-    McpError {
-        code: -32000,
-        message,
-        keyflow_code: "internal_error",
-        hint: None,
+fn classify_secret_error(error: &SecretError, message: String) -> McpError {
+    match error {
+        SecretError::NotFound { .. }
+        | SecretError::PathNotFound { .. }
+        | SecretError::NoEnvFilesFound { .. } => McpError {
+            code: -32001,
+            message,
+            keyflow_code: "not_found",
+            hint: Some(
+                "Verify the requested secret, project, provider, or path exists.".to_string(),
+            ),
+        },
+        SecretError::AlreadyExists { .. } => McpError {
+            code: -32002,
+            message,
+            keyflow_code: "already_exists",
+            hint: Some("Use the update flow instead of trying to recreate the secret.".to_string()),
+        },
+        SecretError::InvalidEnvVarName(_) | SecretError::EnvVarNameEmpty => McpError {
+            code: -32602,
+            message,
+            keyflow_code: "invalid_params",
+            hint: Some(
+                "Environment variable names must be non-empty and contain only [A-Za-z0-9_]."
+                    .to_string(),
+            ),
+        },
     }
 }
 

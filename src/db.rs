@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
+use std::path::Path;
 
 use crate::crypto::Crypto;
 use crate::models::{ListFilter, SecretEntry};
@@ -30,10 +31,27 @@ pub struct Database {
     crypto: Crypto,
 }
 
+/// Parse a required RFC3339 timestamp column, surfacing corruption instead of
+/// silently substituting `Utc::now()`.
+fn parse_row_timestamp(value: &str, field: &str, id: &str) -> Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .with_context(|| format!("Corrupt '{field}' timestamp for secret {id}"))
+        .map(|date| date.with_timezone(&Utc))
+}
+
 impl Database {
-    pub fn open(db_path: &str, crypto: Crypto) -> Result<Self> {
+    pub fn open(db_path: &Path, crypto: Crypto) -> Result<Self> {
         let conn = Connection::open(db_path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // The DB file and its WAL sidecars hold the encrypted secret blobs and
+        // all metadata; SQLite creates them with the process umask, so tighten
+        // them to owner-only (0600).
+        crate::secure_fs::restrict_file(db_path)?;
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = db_path.as_os_str().to_owned();
+            sidecar.push(suffix);
+            crate::secure_fs::restrict_file(Path::new(&sidecar))?;
+        }
         let db = Self { conn, crypto };
         db.init_tables()?;
         Ok(db)
@@ -452,6 +470,7 @@ impl Database {
     fn row_to_entry(&self, row: &rusqlite::Row) -> Result<SecretEntry> {
         let idx = |col: &str| -> rusqlite::Result<usize> { row.as_ref().column_index(col) };
 
+        let id: String = row.get(idx("id")?)?;
         let scopes_str: String = row.get(idx("scopes")?)?;
         let projects_str: String = row.get(idx("projects")?)?;
         let expires_str: Option<String> = row.get(idx("expires_at")?)?;
@@ -460,8 +479,30 @@ impl Database {
         let created_str: String = row.get(idx("created_at")?)?;
         let updated_str: String = row.get(idx("updated_at")?)?;
 
+        // Surface corrupt rows instead of silently dropping data: a secret that
+        // loses its `projects` would leak into the wrong project's .env.
+        let scopes: Vec<String> = serde_json::from_str(&scopes_str)
+            .with_context(|| format!("Corrupt 'scopes' JSON for secret {id}"))?;
+        let projects: Vec<String> = serde_json::from_str(&projects_str)
+            .with_context(|| format!("Corrupt 'projects' JSON for secret {id}"))?;
+
+        let expires_at = match expires_str {
+            Some(ref value) => Some(parse_row_timestamp(value, "expires_at", &id)?),
+            None => None,
+        };
+        let last_used_at = match last_used_str {
+            Some(ref value) => Some(parse_row_timestamp(value, "last_used_at", &id)?),
+            None => None,
+        };
+        let last_verified_at = match last_verified_str {
+            Some(ref value) => Some(parse_row_timestamp(value, "last_verified_at", &id)?),
+            None => None,
+        };
+        let created_at = parse_row_timestamp(&created_str, "created_at", &id)?;
+        let updated_at = parse_row_timestamp(&updated_str, "updated_at", &id)?;
+
         Ok(SecretEntry {
-            id: row.get(idx("id")?)?,
+            id,
             name: row.get(idx("name")?)?,
             env_var: row.get(idx("env_var")?)?,
             provider: row.get(idx("provider")?)?,
@@ -471,30 +512,14 @@ impl Database {
             source: row.get(idx("source")?)?,
             environment: row.get(idx("environment")?)?,
             permission_profile: row.get(idx("permission_profile")?)?,
-            scopes: serde_json::from_str(&scopes_str).unwrap_or_default(),
-            projects: serde_json::from_str(&projects_str).unwrap_or_default(),
+            scopes,
+            projects,
             apply_url: row.get(idx("apply_url")?)?,
-            expires_at: expires_str.and_then(|value| {
-                DateTime::parse_from_rfc3339(&value)
-                    .ok()
-                    .map(|date| date.with_timezone(&Utc))
-            }),
-            created_at: DateTime::parse_from_rfc3339(&created_str)
-                .map(|date| date.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
-            updated_at: DateTime::parse_from_rfc3339(&updated_str)
-                .map(|date| date.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
-            last_used_at: last_used_str.and_then(|value| {
-                DateTime::parse_from_rfc3339(&value)
-                    .ok()
-                    .map(|date| date.with_timezone(&Utc))
-            }),
-            last_verified_at: last_verified_str.and_then(|value| {
-                DateTime::parse_from_rfc3339(&value)
-                    .ok()
-                    .map(|date| date.with_timezone(&Utc))
-            }),
+            expires_at,
+            created_at,
+            updated_at,
+            last_used_at,
+            last_verified_at,
             is_active: row.get(idx("is_active")?)?,
         })
     }
@@ -515,7 +540,7 @@ mod tests {
     fn test_db() -> (Database, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let db = Database::open(db_path.to_str().unwrap(), test_crypto()).unwrap();
+        let db = Database::open(&db_path, test_crypto()).unwrap();
         (db, dir)
     }
 
@@ -595,7 +620,7 @@ mod tests {
     #[test]
     fn list_secrets_excludes_inactive_by_default() {
         let (db, _dir) = test_db();
-        let mut active = make_entry("active-key", "ACTIVE", "other");
+        let active = make_entry("active-key", "ACTIVE", "other");
         let mut inactive = make_entry("inactive-key", "INACTIVE", "other");
         inactive.is_active = false;
         db.add_secret(&active, "val1").unwrap();

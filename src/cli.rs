@@ -309,6 +309,13 @@ pub enum Commands {
     /// Clear cached local passphrase (require re-auth on next command)
     Lock,
 
+    /// Cache the master passphrase locally so subsequent commands don't prompt
+    Unlock {
+        /// Hours until the cached passphrase expires (0 = never)
+        #[arg(long, default_value_t = 8)]
+        ttl: u64,
+    },
+
     /// Start MCP server (for AI coding assistants)
     Serve {
         /// Transport to use: stdio (default) or http

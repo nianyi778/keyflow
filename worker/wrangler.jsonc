@@ -26,5 +26,30 @@
       "binding": "KV",
       "id": "8ad3a1166ec54cfdb7ccb6b80e2110fd"
     }
+  ],
+  // Cloudflare native Rate Limiting bindings. These are atomic at the edge,
+  // unlike a KV read-modify-write counter which is racy. `period` must be 10
+  // or 60 seconds. Requires Wrangler >= 4.36.0.
+  //
+  //   API_RATE_LIMITER  -> authenticated /api/* requests, keyed per user.
+  //   AUTH_RATE_LIMITER -> unauthenticated OAuth + device endpoints, keyed by IP.
+  //
+  // `namespace_id` is a developer-chosen integer that identifies the rate-limit
+  // bucket. The values below are scoped to this Worker — keep them unique
+  // across any other rate limits you add to *this* Worker, but they need not
+  // match any external CF ID. If you fork this Worker into the same account
+  // for multiple deployments, pick distinct values per deployment so each
+  // bucket counts independently.
+  "ratelimits": [
+    {
+      "name": "API_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 100, "period": 60 }
+    },
+    {
+      "name": "AUTH_RATE_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 20, "period": 60 }
+    }
   ]
 }

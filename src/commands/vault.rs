@@ -7,7 +7,7 @@ use std::io::IsTerminal;
 use std::path::Path;
 use std::process::Command;
 
-use crate::commands::auth::{get_data_dir, get_passphrase, load_config, open_db, save_keyfile};
+use crate::commands::auth::{clear_keyfile, get_data_dir, get_passphrase, load_config, open_db};
 use crate::commands::helpers::{BackupFile, BACKUP_FORMAT_VERSION};
 use crate::crypto::Crypto;
 use crate::db::Database;
@@ -47,27 +47,21 @@ pub fn cmd_init(passphrase_arg: Option<String>) -> Result<()> {
         bail!("Passphrase must be at least 6 characters");
     }
 
-    let _ = save_keyfile(&passphrase);
-
     let salt = Crypto::generate_salt();
     let salt_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &salt);
 
     let config = AppConfig { salt: salt_b64 };
     let config_str = serde_json::to_string_pretty(&config)?;
-    fs::write(data_dir.join("config.json"), config_str)?;
+    crate::secure_fs::write_private(&data_dir.join("config.json"), &config_str)?;
 
     let crypto = Crypto::new(&passphrase, &salt)?;
     let db_path = data_dir.join("keyflow.db");
-    Database::open(db_path.to_str().unwrap(), crypto)?;
+    Database::open(&db_path, crypto)?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&data_dir, fs::Permissions::from_mode(0o700))?;
-        fs::set_permissions(
-            data_dir.join("config.json"),
-            fs::Permissions::from_mode(0o600),
-        )?;
     }
 
     println!(
@@ -96,7 +90,7 @@ pub fn cmd_init(passphrase_arg: Option<String>) -> Result<()> {
                 .interact()?
             {
                 let crypto = Crypto::new(&passphrase, &salt)?;
-                let db = Database::open(db_path.to_str().unwrap(), crypto)?;
+                let db = Database::open(&db_path, crypto)?;
                 let service = crate::services::secrets::SecretService::new(db);
                 let import_result = service.import_path(crate::services::secrets::ImportRequest {
                     path: &cwd,
@@ -134,7 +128,8 @@ pub fn cmd_init(passphrase_arg: Option<String>) -> Result<()> {
     }
 
     println!(
-        "\nTip: Set {} to skip passphrase prompts.",
+        "\nTip: Run {} or set {} to skip passphrase prompts.",
+        style("kf unlock").cyan(),
         style("KEYFLOW_PASSPHRASE").yellow()
     );
 
@@ -159,7 +154,7 @@ pub fn cmd_passwd(old_arg: Option<String>, new_arg: Option<String>) -> Result<()
 
     let old_crypto = Crypto::new(&old_pass, &old_salt)?;
     let db_path = data_dir.join("keyflow.db");
-    let db = Database::open(db_path.to_str().unwrap(), old_crypto)?;
+    let db = Database::open(&db_path, old_crypto)?;
 
     let raw_entries = db.get_all_raw()?;
     let mut decrypted_pairs: Vec<(String, Vec<u8>)> = Vec::new();
@@ -180,10 +175,26 @@ pub fn cmd_passwd(old_arg: Option<String>, new_arg: Option<String>) -> Result<()
         bail!("Passphrase must be at least 6 characters");
     }
 
-    let _ = save_keyfile(&new_pass);
-
     let new_salt = Crypto::generate_salt();
     let new_crypto = Crypto::new(&new_pass, &new_salt)?;
+
+    // Back up the vault DB (and its WAL sidecars) before re-encrypting. If the
+    // process dies after reencrypt_all commits but before the new salt is
+    // written, the vault is briefly unreadable — restoring these files returns
+    // it to its pre-passwd state.
+    let backup_files: Vec<(std::path::PathBuf, std::path::PathBuf)> = ["", "-wal", "-shm"]
+        .iter()
+        .map(|suffix| {
+            (
+                data_dir.join(format!("keyflow.db{suffix}")),
+                data_dir.join(format!("keyflow.db.pre-passwd.bak{suffix}")),
+            )
+        })
+        .filter(|(src, _)| src.exists())
+        .collect();
+    for (src, dst) in &backup_files {
+        fs::copy(src, dst).context("Failed to back up the vault before changing the passphrase")?;
+    }
 
     db.reencrypt_all(&decrypted_pairs, &new_crypto)?;
 
@@ -191,7 +202,17 @@ pub fn cmd_passwd(old_arg: Option<String>, new_arg: Option<String>) -> Result<()
         base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &new_salt);
     let new_config = AppConfig { salt: new_salt_b64 };
     let config_str = serde_json::to_string_pretty(&new_config)?;
-    fs::write(data_dir.join("config.json"), config_str)?;
+    // Atomic: the new salt either fully replaces the old one or not at all, so
+    // config.json is never left half-written.
+    crate::secure_fs::write_private_atomic(&data_dir.join("config.json"), &config_str)?;
+
+    // Rekey completed end to end — drop the pre-passwd backup.
+    for (_, dst) in &backup_files {
+        let _ = fs::remove_file(dst);
+    }
+
+    // The old cached passphrase no longer decrypts the vault — drop it.
+    clear_keyfile()?;
 
     println!(
         "{} Passphrase changed. {} secrets re-encrypted.",
@@ -199,7 +220,8 @@ pub fn cmd_passwd(old_arg: Option<String>, new_arg: Option<String>) -> Result<()
         decrypted_pairs.len()
     );
     println!(
-        "  Update your {} if set.",
+        "  Run {} to re-cache, and update your {} if set.",
+        style("kf unlock").cyan(),
         style("KEYFLOW_PASSPHRASE").yellow()
     );
 

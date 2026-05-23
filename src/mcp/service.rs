@@ -3,7 +3,9 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::mcp::errors::McpProtocolError;
 use crate::models::{self, KeyStatus, ListFilter, SecretEntry};
+use crate::services::errors::SecretError;
 use crate::services::secrets::{
     validate_env_var_name, ProjectKeysResult, SearchFilter, SearchResult, SecretDraft,
     SecretService,
@@ -187,7 +189,7 @@ impl<'a> VaultService<'a> {
                 });
                 (uri.to_string(), format!("Provider: {provider}"), body)
             }
-            _ => bail!("Unknown resource URI: {uri}"),
+            _ => return Err(McpProtocolError::UnknownResourceUri(uri.to_string()).into()),
         };
 
         Ok(json!({
@@ -206,7 +208,11 @@ impl<'a> VaultService<'a> {
             entries.retain(|e| e.projects.iter().any(|p| p == proj));
         }
         if entries.is_empty() {
-            bail!("Secret '{}' not found", name);
+            return Err(SecretError::NotFound {
+                name: name.to_string(),
+                project: None,
+            }
+            .into());
         }
         let keys: Vec<Value> = entries.iter().map(models::secret_to_json).collect();
         let count = keys.len();
@@ -324,29 +330,77 @@ impl<'a> VaultService<'a> {
                 "existing_name": Value::Null,
                 "hint": "Value stored securely and encrypted at rest."
             })),
-            Err(error) if error.to_string().contains("already exists") => Ok(json!({
-                "success": false,
-                "code": "already_exists",
-                "name": name,
-                "env_var": env_var,
-                "provider": provider,
-                "message": "Secret already exists in KeyFlow.",
-                "error": "Use update flow instead.",
-                "existing_name": name,
-                "hint": "Call inspect_key first, then update the existing secret if needed."
-            })),
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<SecretError>(),
+                    Some(SecretError::AlreadyExists { .. })
+                ) =>
+            {
+                Ok(json!({
+                    "success": false,
+                    "code": "already_exists",
+                    "name": name,
+                    "env_var": env_var,
+                    "provider": provider,
+                    "message": "Secret already exists in KeyFlow.",
+                    "error": "Use update flow instead.",
+                    "existing_name": name,
+                    "hint": "Call inspect_key first, then update the existing secret if needed."
+                }))
+            }
             Err(error) => Err(error),
         }
     }
 
     pub fn delete_key(&self, request: DeleteKeyRequest) -> Result<Value> {
-        let entries = self.secrets.get_entries_by_name(&request.name)?;
+        let mut entries = self.secrets.get_entries_by_name(&request.name)?;
         if entries.is_empty() {
             return Ok(json!({
                 "success": false,
                 "name": request.name,
                 "message": format!("Secret '{}' not found", request.name),
                 "error": "not_found"
+            }));
+        }
+        // Narrow by project scope when the caller supplied one.
+        if let Some(project) = request.project.as_deref() {
+            entries.retain(|entry| entry.projects.iter().any(|p| p == project));
+            if entries.is_empty() {
+                return Ok(json!({
+                    "success": false,
+                    "name": request.name,
+                    "message": format!(
+                        "No secret named '{}' is scoped to project '{}'",
+                        request.name, project
+                    ),
+                    "error": "not_found"
+                }));
+            }
+        }
+        // Never delete by guessing: a name can match multiple secrets across
+        // projects, and delete_key is irreversible.
+        if entries.len() > 1 {
+            let candidates: Vec<Value> = entries
+                .iter()
+                .map(|entry| {
+                    json!({
+                        "name": entry.name,
+                        "env_var": entry.env_var,
+                        "provider": entry.provider,
+                        "projects": entry.projects
+                    })
+                })
+                .collect();
+            return Ok(json!({
+                "success": false,
+                "name": request.name,
+                "message": format!(
+                    "{} secrets are named '{}'. Refusing to delete ambiguously — re-call delete_key with a 'project' to pick one.",
+                    entries.len(),
+                    request.name
+                ),
+                "error": "ambiguous",
+                "candidates": candidates
             }));
         }
         let entry = &entries[0];
@@ -371,7 +425,7 @@ impl<'a> VaultService<'a> {
 
     pub fn get_env_snippet(&self, filter: EnvSnippetRequest) -> Result<Value> {
         if filter.project.is_none() {
-            bail!("'project' must be specified");
+            return Err(McpProtocolError::MissingArgument("'project'").into());
         }
 
         let entries = self.secrets.list_entries(&ListFilter {
@@ -387,12 +441,20 @@ impl<'a> VaultService<'a> {
             }));
         }
 
+        // An MCP client is an AI agent. Returning plaintext secrets to it is
+        // off by default — the operator must opt in with KEYFLOW_MCP_ALLOW_REVEAL.
+        let reveal_requested = !filter.mask_values;
+        let reveal_blocked = reveal_requested && !reveal_allowed();
+        let effective_mask = filter.mask_values || reveal_blocked;
+
         let mut lines = Vec::new();
         let mut keys = Vec::new();
+        let mut revealed_env_vars = Vec::new();
         for entry in entries {
-            let value = if filter.mask_values {
+            let value = if effective_mask {
                 "***".to_string()
             } else {
+                revealed_env_vars.push(entry.env_var.clone());
                 self.secrets.get_secret_value(&entry.id)?
             };
             lines.push(format!("{}={}", entry.env_var, value));
@@ -403,13 +465,26 @@ impl<'a> VaultService<'a> {
             }));
         }
 
-        Ok(json!({
+        // Record every plaintext disclosure to an audit trail.
+        if !revealed_env_vars.is_empty() {
+            audit_plaintext_reveal(filter.project.as_deref(), &revealed_env_vars);
+        }
+
+        let mut result = json!({
             "found": true,
             "count": lines.len(),
             "snippet": lines.join("\n"),
             "keys": keys,
-            "masked": filter.mask_values
-        }))
+            "masked": effective_mask
+        });
+        if reveal_blocked {
+            result["reveal_blocked"] = json!(true);
+            result["message"] = json!(
+                "Plaintext values are masked. This KeyFlow MCP server blocks plaintext \
+                 reveal unless it is started with KEYFLOW_MCP_ALLOW_REVEAL=1."
+            );
+        }
+        Ok(result)
     }
 
     pub fn check_project_readiness(&self, request: ProjectReadinessRequest) -> Result<Value> {
@@ -420,6 +495,46 @@ impl<'a> VaultService<'a> {
         )?;
         serde_json::to_value(report).map_err(Into::into)
     }
+}
+
+/// Whether the MCP server may return plaintext secret values to a client.
+/// Disabled by default so a prompt-injected agent cannot exfiltrate the vault;
+/// the operator opts in with `KEYFLOW_MCP_ALLOW_REVEAL=1`.
+fn reveal_allowed() -> bool {
+    std::env::var("KEYFLOW_MCP_ALLOW_REVEAL")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Append an audit record whenever plaintext secrets are disclosed over MCP.
+/// Best effort: a logging failure must not block the request, but is reported
+/// on stderr.
+fn audit_plaintext_reveal(project: Option<&str>, env_vars: &[String]) {
+    let record = json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "event": "mcp_plaintext_reveal",
+        "project": project,
+        "env_vars": env_vars,
+    });
+    if let Err(error) = append_audit_line(&record) {
+        eprintln!("keyflow: failed to write MCP audit log: {error}");
+    }
+}
+
+fn append_audit_line(record: &Value) -> Result<()> {
+    use std::io::Write;
+    let path = crate::paths::data_dir()?.join("mcp-audit.jsonl");
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path)?;
+    writeln!(file, "{record}")?;
+    crate::secure_fs::restrict_file(&path)?;
+    Ok(())
 }
 
 fn search_result_to_json(result: SearchResult) -> Value {
@@ -606,6 +721,10 @@ fn default_true() -> bool {
 #[derive(Debug, Deserialize)]
 pub struct DeleteKeyRequest {
     pub name: String,
+    /// Project scope, used only to disambiguate when several secrets share the
+    /// same name.
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 pub fn parse_args<T>(value: Value) -> Result<T>

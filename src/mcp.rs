@@ -1,3 +1,4 @@
+mod errors;
 mod http;
 mod prompts;
 mod protocol;

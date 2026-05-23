@@ -5,6 +5,7 @@ pub mod db;
 pub mod mcp;
 pub mod models;
 pub mod paths;
+pub mod secure_fs;
 pub mod services;
 
 use anyhow::Result;
@@ -160,6 +161,7 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             on_conflict,
         }),
         Commands::Lock => commands::cmd_lock(),
+        Commands::Unlock { ttl } => commands::cmd_unlock(ttl),
         Commands::Serve {
             transport,
             host,

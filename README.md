@@ -153,18 +153,21 @@ kf sync disconnect # Disconnect from sync
 | `kf sync` | Cloud sync |
 | `kf backup` / `kf restore` | Backup / restore |
 | `kf passwd` | Change master password |
-| `kf lock` | Lock vault |
+| `kf lock` | Lock vault (clear cached passphrase) |
+| `kf unlock [--ttl <hours>]` | Cache the passphrase for `<hours>` (default 8; `0` = no expiry) |
 | `kf completions <shell>` | Generate shell completions |
 | `kf upgrade` | Upgrade to the latest version |
 
 ## Security
 
-- **AES-256-GCM** encryption, **Argon2** key derivation
-- Local storage: macOS `~/Library/Application Support/keyflow/`, Linux `~/.local/share/keyflow/`
-- MCP exposes metadata only, never secret values
-- `.passphrase` file is `0600`, `kf lock` clears it instantly
-- `kf run` injects at runtime — plaintext never hits disk
-- Auto-detection for 20+ providers (Google, GitHub, Cloudflare, AWS, OpenAI, etc.)
+- **AES-256-GCM** encryption, **Argon2id** key derivation (parameters pinned in code).
+- Local storage: macOS `~/Library/Application Support/keyflow/`, Linux `~/.local/share/keyflow/`. The DB, sync token file, and config are all written `0600`.
+- The master passphrase is **never cached implicitly**. Default behavior prompts each command, or reads `KEYFLOW_PASSPHRASE`. Run `kf unlock` to opt in to a TTL-bounded cache (default 8h); `kf lock` clears it.
+- MCP exposes metadata only by default. Plaintext disclosure via `reuse_env_snippet` requires the operator to start the server with `KEYFLOW_MCP_ALLOW_REVEAL=1`, and every reveal is logged to `mcp-audit.jsonl`.
+- The MCP HTTP transport requires a bearer token. Set `KEYFLOW_MCP_TOKEN` to pin it; otherwise `kf serve --transport http` generates and prints a fresh one. Browser `Origin` headers are rejected.
+- `kf sync` enforces HTTPS endpoints (loopback hosts excepted for local dev), and the device flow uses PKCE; cloud tokens are 7-day, revocable.
+- `kf run` injects at runtime — plaintext never hits disk.
+- Auto-detection for 20+ providers (Google, GitHub, Cloudflare, AWS, OpenAI, etc.).
 
 ## License
 

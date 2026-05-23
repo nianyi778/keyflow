@@ -3,9 +3,18 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "types": ["@cloudflare/workers-types"],
+    // Workers run on workerd, not in a browser. Excluding the DOM lib avoids
+    // the duplicate-global conflicts between TypeScript's built-in DOM types
+    // and @cloudflare/workers-types (DOMException, crypto, Response, etc).
+    "lib": ["ESNext"],
+    // @cloudflare/workers-types provides the runtime globals; the cloudflare:test
+    // module types come from @cloudflare/vitest-pool-workers.
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers"],
     "strict": true,
-    "noEmit": true
+    "noEmit": true,
+    // Third-party .d.ts files (workers-types, vitest) are not all mutually
+    // consistent under strict mode; we only typecheck our own sources.
+    "skipLibCheck": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
 }

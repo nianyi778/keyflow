@@ -7,12 +7,21 @@ type Bindings = {
   JWT_SECRET: string; // Set via wrangler secret put
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
+  // Native Cloudflare rate limiters (declared in wrangler.jsonc -> ratelimits).
+  // Optional so the worker still runs in test/dev contexts where they may be
+  // absent; code falls back gracefully when a binding is missing.
+  API_RATE_LIMITER?: RateLimit;
+  AUTH_RATE_LIMITER?: RateLimit;
 };
 
 type JWTPayload = {
   sub: string; // user_id
   iat: number;
   exp: number;
+  // token_version pins a JWT to a generation of the user's credentials.
+  // It is compared against users.token_version on every request so a user
+  // can revoke every outstanding token by bumping that column.
+  tv: number;
 };
 
 type Variables = {
@@ -32,12 +41,36 @@ type DeviceSession = {
   status: "pending" | "approved";
   created_at?: string;
   approved_at?: string;
+  // SHA-256 hash (base64url) of the CLI-generated code_verifier (PKCE-style
+  // proof of possession). Stored at /api/device/start; the matching verifier
+  // must be presented at /api/device/poll before a token is issued.
+  code_challenge?: string;
 };
 
-const TOKEN_LIFETIME_SECONDS = 365 * 24 * 60 * 60;
-const RATE_LIMIT_PER_MINUTE = 100;
+// Access-token lifetime. Reduced from the previous 365 days. We pick 7 days:
+// long enough that a developer is not re-authenticating constantly, short
+// enough that a leaked token has a bounded blast radius. Immediate revocation
+// is still available via /api/revoke (token_version bump).
+const TOKEN_LIFETIME_SECONDS = 7 * 24 * 60 * 60;
+// Browser session cookie lifetime mirrors the token lifetime.
+const COOKIE_LIFETIME_SECONDS = TOKEN_LIFETIME_SECONDS;
 const DEVICE_TTL_SECONDS = 600;
+// OAuth state nonce: short-lived, single-use CSRF token bound to a device code.
+const OAUTH_STATE_TTL_SECONDS = 600;
+// JWKS cache lifetime (Google rotates signing keys roughly daily).
+const JWKS_CACHE_TTL_SECONDS = 3600;
 const GOOGLE_REDIRECT_URI = "https://keyflow.divinations.top/auth/google/callback";
+const GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs";
+const GOOGLE_ISSUERS = new Set(["accounts.google.com", "https://accounts.google.com"]);
+
+// Push limits. Defence against memory exhaustion and storage abuse.
+const MAX_PUSH_ENTRIES = 1000;
+const MAX_BLOB_BYTES = 1024 * 1024; // 1 MiB per encrypted blob
+const MAX_USER_STORAGE_BYTES = 50 * 1024 * 1024; // 50 MiB total per user
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const USER_CODE_RE = /^[A-Z2-9]{8}$/;
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -249,7 +282,7 @@ ${
     ? `<p class="code">Authorizing device: <strong>${escapeHtml(userCode)}</strong></p>`
     : ""
 }
-<a class="btn" href="${googleAuthUrl}">
+<a class="btn" href="${escapeHtml(googleAuthUrl)}">
 <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="#EA4335" d="M12 10.2v3.9h5.5c-.2 1.2-1.4 3.6-5.5 3.6-3.3 0-6-2.8-6-6.2s2.7-6.2 6-6.2c1.9 0 3.1.8 3.9 1.5l2.7-2.7C17 2.5 14.8 1.5 12 1.5 6.8 1.5 2.6 5.9 2.6 11.3S6.8 21.1 12 21.1c6.9 0 9.5-4.8 9.5-7.3 0-.5 0-.9-.1-1.3H12z"/></svg>
 Continue with Google
 </a>
@@ -263,7 +296,7 @@ type AppContext = Context<{ Bindings: Bindings; Variables: Variables }>;
 
 const jsonError = (
   c: AppContext,
-  status: 400 | 401 | 404 | 429 | 500,
+  status: 400 | 401 | 403 | 404 | 413 | 429 | 500 | 502,
   error: string,
   code: string,
 ) => {
@@ -289,12 +322,38 @@ function fromBase64Url(input: string): Uint8Array {
   return bytes;
 }
 
-async function importHmacKey(secret: string, usages: KeyUsage[]): Promise<CryptoKey> {
+async function importHmacKey(secret: string, usages: string[]): Promise<CryptoKey> {
   return crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, usages);
 }
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+/** SHA-256 of a string, returned as base64url. Used for PKCE challenges. */
+async function sha256Base64Url(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(input));
+  return toBase64Url(new Uint8Array(digest));
+}
+
+/** Constant-time string comparison to avoid timing side channels. */
+function timingSafeEqual(a: string, b: string): boolean {
+  const aBytes = encoder.encode(a);
+  const bBytes = encoder.encode(b);
+  // Compare a length-padded view so the loop count does not leak length.
+  const len = Math.max(aBytes.length, bBytes.length);
+  let mismatch = aBytes.length ^ bBytes.length;
+  for (let i = 0; i < len; i += 1) {
+    mismatch |= (aBytes[i] ?? 0) ^ (bBytes[i] ?? 0);
+  }
+  return mismatch === 0;
+}
+
+/** Cryptographically random URL-safe nonce, e.g. for OAuth `state`. */
+function randomToken(byteLength = 32): string {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  return toBase64Url(bytes);
 }
 
 async function signJWT(payload: JWTPayload, secret: string): Promise<string> {
@@ -341,7 +400,8 @@ async function verifyJWT(token: string, secret: string): Promise<JWTPayload | nu
     if (
       typeof payload.sub !== "string" ||
       typeof payload.iat !== "number" ||
-      typeof payload.exp !== "number"
+      typeof payload.exp !== "number" ||
+      typeof payload.tv !== "number"
     ) {
       return null;
     }
@@ -357,16 +417,154 @@ async function verifyJWT(token: string, secret: string): Promise<JWTPayload | nu
   }
 }
 
-async function issueToken(userId: string, secret: string): Promise<string> {
+async function issueToken(userId: string, tokenVersion: number, secret: string): Promise<string> {
   const issuedAt = Math.floor(Date.now() / 1000);
   return signJWT(
     {
       sub: userId,
       iat: issuedAt,
       exp: issuedAt + TOKEN_LIFETIME_SECONDS,
+      tv: tokenVersion,
     },
     secret,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Google id_token (RS256) verification via JWKS.
+// ---------------------------------------------------------------------------
+
+type GoogleJwk = {
+  kid: string;
+  n: string;
+  e: string;
+  alg?: string;
+  kty?: string;
+  use?: string;
+};
+
+type GoogleIdTokenClaims = {
+  iss: string;
+  aud: string;
+  sub: string;
+  exp: number;
+  email?: string;
+  email_verified?: boolean | string;
+  name?: string;
+  picture?: string;
+};
+
+/**
+ * Fetch Google's JWKS, caching the raw response in KV so we are not hitting
+ * Google on every callback. Returns the parsed key set.
+ */
+async function fetchGoogleJwks(kv: KVNamespace): Promise<GoogleJwk[]> {
+  const cached = await kv.get("google_jwks");
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached) as { keys?: GoogleJwk[] };
+      if (Array.isArray(parsed.keys) && parsed.keys.length > 0) {
+        return parsed.keys;
+      }
+    } catch {
+      // fall through to a fresh fetch
+    }
+  }
+
+  const response = await fetch(GOOGLE_JWKS_URL);
+  if (!response.ok) {
+    throw new Error(`JWKS fetch failed: ${response.status}`);
+  }
+  const text = await response.text();
+  const parsed = JSON.parse(text) as { keys?: GoogleJwk[] };
+  if (!Array.isArray(parsed.keys) || parsed.keys.length === 0) {
+    throw new Error("JWKS response had no keys");
+  }
+  await kv.put("google_jwks", text, { expirationTtl: JWKS_CACHE_TTL_SECONDS });
+  return parsed.keys;
+}
+
+async function importRsaKey(jwk: GoogleJwk): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    "jwk",
+    { kty: "RSA", n: jwk.n, e: jwk.e, alg: "RS256", ext: true },
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["verify"],
+  );
+}
+
+/**
+ * Verify a Google-issued OpenID Connect id_token: RS256 signature against the
+ * JWKS, plus `iss`, `aud` and `exp` checks. Returns the verified claims, or
+ * null if anything fails to validate. Never trust an id_token without this.
+ */
+async function verifyGoogleIdToken(
+  idToken: string,
+  expectedAud: string,
+  kv: KVNamespace,
+): Promise<GoogleIdTokenClaims | null> {
+  const parts = idToken.split(".");
+  if (parts.length !== 3) {
+    return null;
+  }
+  const [headerEncoded, payloadEncoded, signatureEncoded] = parts;
+
+  let header: { alg?: string; kid?: string };
+  let claims: GoogleIdTokenClaims;
+  try {
+    header = JSON.parse(decoder.decode(fromBase64Url(headerEncoded)));
+    claims = JSON.parse(decoder.decode(fromBase64Url(payloadEncoded)));
+  } catch {
+    return null;
+  }
+
+  if (header.alg !== "RS256" || typeof header.kid !== "string") {
+    return null;
+  }
+
+  let keys = await fetchGoogleJwks(kv);
+  let jwk = keys.find((k) => k.kid === header.kid);
+  if (!jwk) {
+    // The cached key set may be stale (Google rotates keys). Force a refresh.
+    await kv.delete("google_jwks");
+    keys = await fetchGoogleJwks(kv);
+    jwk = keys.find((k) => k.kid === header.kid);
+  }
+  if (!jwk) {
+    return null;
+  }
+
+  let signatureValid = false;
+  try {
+    const key = await importRsaKey(jwk);
+    signatureValid = await crypto.subtle.verify(
+      "RSASSA-PKCS1-v1_5",
+      key,
+      toArrayBuffer(fromBase64Url(signatureEncoded)),
+      encoder.encode(`${headerEncoded}.${payloadEncoded}`),
+    );
+  } catch {
+    return null;
+  }
+  if (!signatureValid) {
+    return null;
+  }
+
+  if (typeof claims.iss !== "string" || !GOOGLE_ISSUERS.has(claims.iss)) {
+    return null;
+  }
+  if (typeof claims.aud !== "string" || claims.aud !== expectedAud) {
+    return null;
+  }
+  if (typeof claims.exp !== "number" || claims.exp <= Math.floor(Date.now() / 1000)) {
+    return null;
+  }
+  if (typeof claims.sub !== "string" || claims.sub.trim() === "") {
+    return null;
+  }
+
+  return claims;
 }
 
 function escapeHtml(value: string): string {
@@ -389,20 +587,6 @@ function generateUserCode(length = 8): string {
   return result;
 }
 
-async function resolveDeviceCode(kv: KVNamespace, providedCode: string): Promise<string | null> {
-  const code = providedCode.trim();
-  if (!code) {
-    return null;
-  }
-
-  const direct = await kv.get(`device:${code}`);
-  if (direct) {
-    return code;
-  }
-
-  return kv.get(`device_user:${code}`);
-}
-
 function isServerNewer(serverUpdatedAt: string, clientUpdatedAt: string): boolean {
   const serverTs = Date.parse(serverUpdatedAt);
   const clientTs = Date.parse(clientUpdatedAt);
@@ -412,6 +596,34 @@ function isServerNewer(serverUpdatedAt: string, clientUpdatedAt: string): boolea
   }
 
   return serverUpdatedAt > clientUpdatedAt;
+}
+
+/** Best-effort client IP for rate-limit keying. */
+function clientIp(c: AppContext): string {
+  return (
+    c.req.header("CF-Connecting-IP") ??
+    c.req.header("X-Forwarded-For")?.split(",")[0]?.trim() ??
+    "unknown"
+  );
+}
+
+/**
+ * Apply a Cloudflare native rate limiter if the binding is configured.
+ * Returns true when the request is allowed (or no limiter is bound), false
+ * when the limit was exceeded. Native limiters are atomic at the edge, so
+ * unlike the previous KV read-modify-write counter they are not racy.
+ */
+async function checkRateLimit(limiter: RateLimit | undefined, key: string): Promise<boolean> {
+  if (!limiter) {
+    return true;
+  }
+  try {
+    const { success } = await limiter.limit({ key });
+    return success;
+  } catch {
+    // Fail open on limiter errors rather than locking everyone out.
+    return true;
+  }
 }
 
 app.use(
@@ -426,8 +638,9 @@ app.use(
 app.get("/", (c) => c.html(LANDING_HTML));
 
 app.get("/login", (c) => {
-  const rawCode = (c.req.query("code") ?? "").trim();
-  const code = rawCode === "" ? null : rawCode.slice(0, 64);
+  const rawCode = (c.req.query("code") ?? "").trim().toUpperCase();
+  // Only accept a syntactically valid user_code; otherwise drop it.
+  const code = USER_CODE_RE.test(rawCode) ? rawCode : null;
   const googleAuthUrl = code
     ? `/auth/google/start?device_code=${encodeURIComponent(code)}`
     : "/auth/google/start";
@@ -435,10 +648,24 @@ app.get("/login", (c) => {
 });
 
 app.get("/auth/google/start", async (c) => {
-  const providedCode = (c.req.query("device_code") ?? "").trim();
-  let state = "";
+  // Per-IP rate limit on the unauthenticated OAuth start endpoint.
+  if (!(await checkRateLimit(c.env.AUTH_RATE_LIMITER, `auth:${clientIp(c)}`))) {
+    return c.html("<h1>Too many requests. Please retry shortly.</h1>", 429);
+  }
+
+  const providedCode = (c.req.query("device_code") ?? "").trim().toUpperCase();
+
+  // Resolve the device code from a user_code or a raw device_code. We only
+  // store the device_code (a UUID) against the state nonce.
+  let deviceCode: string | null = null;
   if (providedCode) {
-    state = (await resolveDeviceCode(c.env.KV, providedCode)) ?? providedCode;
+    if (USER_CODE_RE.test(providedCode)) {
+      deviceCode = await c.env.KV.get(`device_user:${providedCode}`);
+    } else if (UUID_RE.test(providedCode)) {
+      // Accept a raw device_code only if it maps to a live session.
+      const exists = await c.env.KV.get(`device:${providedCode}`);
+      deviceCode = exists ? providedCode : null;
+    }
   }
 
   const params = new URLSearchParams({
@@ -449,20 +676,44 @@ app.get("/auth/google/start", async (c) => {
     access_type: "online",
   });
 
-  if (state) {
-    params.set("state", state);
-  }
+  // CSRF protection: use a cryptographically random, single-use state nonce.
+  // The device code (if any) is stored server-side keyed by the nonce, never
+  // placed directly in the URL where an attacker could forge or replay it.
+  const stateNonce = randomToken(32);
+  await c.env.KV.put(`oauthstate:${stateNonce}`, deviceCode ?? "", {
+    expirationTtl: OAUTH_STATE_TTL_SECONDS,
+  });
+  params.set("state", stateNonce);
 
   return c.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`, 302);
 });
 
 app.get("/auth/google/callback", async (c) => {
+  if (!(await checkRateLimit(c.env.AUTH_RATE_LIMITER, `auth:${clientIp(c)}`))) {
+    return c.html("<h1>Too many requests. Please retry shortly.</h1>", 429);
+  }
+
   const oauthCode = (c.req.query("code") ?? "").trim();
   const state = (c.req.query("state") ?? "").trim();
 
   if (!oauthCode) {
     return c.html("<h1>OAuth callback missing code</h1>", 400);
   }
+
+  // CSRF check: the state must match a nonce we issued. Consuming it here
+  // (single use) prevents replay. A missing/forged state is rejected outright.
+  if (!state) {
+    return c.html("<h1>OAuth callback missing state</h1>", 400);
+  }
+  const stateKey = `oauthstate:${state}`;
+  const storedDeviceCode = await c.env.KV.get(stateKey);
+  if (storedDeviceCode === null) {
+    return c.html("<h1>Invalid or expired OAuth state</h1>", 400);
+  }
+  // One-time use: delete the nonce immediately.
+  await c.env.KV.delete(stateKey);
+  // Empty string sentinel means "browser login, no device code".
+  const deviceCode = storedDeviceCode === "" ? null : storedDeviceCode;
 
   const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -484,48 +735,48 @@ app.get("/auth/google/callback", async (c) => {
     return c.html("<h1>Google sign-in failed</h1>", 502);
   }
 
-  const tokenPayload = (await tokenResponse.json()) as { access_token?: string };
-  if (typeof tokenPayload.access_token !== "string" || tokenPayload.access_token.trim() === "") {
-    return c.html("<h1>Google sign-in failed</h1>", 502);
-  }
-
-  const profileResponse = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
-    headers: {
-      Authorization: `Bearer ${tokenPayload.access_token}`,
-    },
-  });
-
-  if (!profileResponse.ok) {
-    const detail = await profileResponse.text();
-    console.error("Google user info fetch failed", detail);
-    return c.html("<h1>Google sign-in failed</h1>", 502);
-  }
-
-  const profile = (await profileResponse.json()) as {
-    id?: string;
-    email?: string;
-    name?: string;
-    picture?: string;
+  const tokenPayload = (await tokenResponse.json()) as {
+    access_token?: string;
+    id_token?: string;
   };
 
-  if (typeof profile.id !== "string" || profile.id.trim() === "") {
+  // Identity is derived from the cryptographically verified id_token, NOT from
+  // the userinfo REST endpoint (which the worker has no way to authenticate).
+  if (typeof tokenPayload.id_token !== "string" || tokenPayload.id_token.trim() === "") {
+    console.error("Google token exchange returned no id_token");
     return c.html("<h1>Google sign-in failed</h1>", 502);
   }
 
-  const googleId = profile.id;
-  const email = typeof profile.email === "string" ? profile.email : null;
-  const name = typeof profile.name === "string" ? profile.name : null;
-  const avatarUrl = typeof profile.picture === "string" ? profile.picture : null;
+  let claims: GoogleIdTokenClaims | null;
+  try {
+    claims = await verifyGoogleIdToken(tokenPayload.id_token, c.env.GOOGLE_CLIENT_ID, c.env.KV);
+  } catch (err) {
+    console.error("id_token verification error", err);
+    return c.html("<h1>Google sign-in failed</h1>", 502);
+  }
+  if (!claims) {
+    console.error("id_token failed verification");
+    return c.html("<h1>Google sign-in failed</h1>", 502);
+  }
 
-  const existingUser = await c.env.DB.prepare("SELECT id FROM users WHERE google_id = ?")
+  const googleId = claims.sub;
+  const email = typeof claims.email === "string" ? claims.email : null;
+  const name = typeof claims.name === "string" ? claims.name : null;
+  const avatarUrl = typeof claims.picture === "string" ? claims.picture : null;
+
+  const existingUser = await c.env.DB.prepare(
+    "SELECT id, token_version FROM users WHERE google_id = ?",
+  )
     .bind(googleId)
-    .first<{ id: string }>();
+    .first<{ id: string; token_version: number | string }>();
 
   let userId = existingUser?.id;
+  let tokenVersion = Number(existingUser?.token_version ?? 0);
   if (!userId) {
     userId = crypto.randomUUID();
+    tokenVersion = 0;
     await c.env.DB.prepare(
-      "INSERT INTO users (id, google_id, email, name, avatar_url) VALUES (?, ?, ?, ?, ?)",
+      "INSERT INTO users (id, google_id, email, name, avatar_url, token_version) VALUES (?, ?, ?, ?, ?, 0)",
     )
       .bind(userId, googleId, email, name, avatarUrl)
       .run();
@@ -535,36 +786,43 @@ app.get("/auth/google/callback", async (c) => {
       .run();
   }
 
-  if (state) {
-    const deviceKey = `device:${state}`;
+  if (deviceCode) {
+    const deviceKey = `device:${deviceCode}`;
     const existingStateRaw = await c.env.KV.get(deviceKey);
-    const existingState: Partial<DeviceSession> = existingStateRaw
-      ? (() => {
-          try {
-            return JSON.parse(existingStateRaw) as Partial<DeviceSession>;
-          } catch {
-            return {};
-          }
-        })()
-      : {};
+    // Only approve a session that still exists and is still pending.
+    if (existingStateRaw) {
+      let existingState: Partial<DeviceSession> = {};
+      try {
+        existingState = JSON.parse(existingStateRaw) as Partial<DeviceSession>;
+      } catch {
+        existingState = {};
+      }
 
-    const approvedState: DeviceSession = {
-      user_code: typeof existingState.user_code === "string" ? existingState.user_code : undefined,
-      created_at: typeof existingState.created_at === "string" ? existingState.created_at : undefined,
-      user_id: userId,
-      status: "approved",
-      approved_at: new Date().toISOString(),
-    };
+      const approvedState: DeviceSession = {
+        user_code:
+          typeof existingState.user_code === "string" ? existingState.user_code : undefined,
+        created_at:
+          typeof existingState.created_at === "string" ? existingState.created_at : undefined,
+        // Carry the PKCE challenge forward so poll can verify it.
+        code_challenge:
+          typeof existingState.code_challenge === "string"
+            ? existingState.code_challenge
+            : undefined,
+        user_id: userId,
+        status: "approved",
+        approved_at: new Date().toISOString(),
+      };
 
-    await c.env.KV.put(deviceKey, JSON.stringify(approvedState), {
-      expirationTtl: DEVICE_TTL_SECONDS,
-    });
+      await c.env.KV.put(deviceKey, JSON.stringify(approvedState), {
+        expirationTtl: DEVICE_TTL_SECONDS,
+      });
+    }
   }
 
-  const token = await issueToken(userId, c.env.JWT_SECRET);
+  const token = await issueToken(userId, tokenVersion, c.env.JWT_SECRET);
   c.header(
     "Set-Cookie",
-    `kf_token=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${TOKEN_LIFETIME_SECONDS}`,
+    `kf_token=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${COOKIE_LIFETIME_SECONDS}`,
   );
 
   return c.html(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>Device Authorized</title><style>:root{--bg:#0F172A;--sf:#1E293B;--bd:#334155;--ac:#22C55E;--tx:#F8FAFC;--mt:#94A3B8;--mn:'JetBrains Mono',monospace}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);font-family:var(--mn);color:var(--tx);padding:24px}.card{background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:28px;max-width:500px;text-align:center}.ok{color:var(--ac);font-size:18px;margin-bottom:10px}.sub{color:var(--mt);font-size:13px;line-height:1.8}</style></head><body><div class="card"><div class="ok">Device authorized.</div><div class="sub">You can close this tab and return to the terminal.</div></div></body></html>`);
@@ -572,7 +830,12 @@ app.get("/auth/google/callback", async (c) => {
 
 app.use("/api/*", async (c, next) => {
   const path = c.req.path;
+
+  // Unauthenticated device endpoints: rate-limit by IP, then proceed.
   if (path === "/api/device/start" || path === "/api/device/poll") {
+    if (!(await checkRateLimit(c.env.AUTH_RATE_LIMITER, `device:${clientIp(c)}`))) {
+      return jsonError(c, 429, "Rate limit exceeded", "RATE_LIMITED");
+    }
     await next();
     return;
   }
@@ -588,24 +851,80 @@ app.use("/api/*", async (c, next) => {
     return jsonError(c, 401, "Invalid or expired token", "UNAUTHORIZED");
   }
 
-  c.set("userId", payload.sub);
-
-  const minuteBucket = Math.floor(Date.now() / 60000);
-  const rateKey = `rate:${payload.sub}:${minuteBucket}`;
-  const currentRaw = await c.env.KV.get(rateKey);
-  const parsed = currentRaw ? Number.parseInt(currentRaw, 10) : 0;
-  const current = Number.isFinite(parsed) ? parsed : 0;
-
-  if (current >= RATE_LIMIT_PER_MINUTE) {
-    return jsonError(c, 429, "Rate limit exceeded", "RATE_LIMITED");
+  // Token revocation check: the token's `tv` claim must still match the
+  // user's current token_version. A /api/revoke bump invalidates every token.
+  const userRow = await c.env.DB.prepare("SELECT token_version FROM users WHERE id = ?")
+    .bind(payload.sub)
+    .first<{ token_version: number | string }>();
+  if (!userRow) {
+    return jsonError(c, 401, "Unknown user", "UNAUTHORIZED");
+  }
+  if (Number(userRow.token_version) !== payload.tv) {
+    return jsonError(c, 401, "Token has been revoked", "TOKEN_REVOKED");
   }
 
-  await c.env.KV.put(rateKey, String(current + 1), { expirationTtl: 120 });
+  c.set("userId", payload.sub);
+
+  // Authenticated rate limit, keyed per user.
+  if (!(await checkRateLimit(c.env.API_RATE_LIMITER, `user:${payload.sub}`))) {
+    return jsonError(c, 429, "Rate limit exceeded", "RATE_LIMITED");
+  }
 
   await next();
 });
 
+// ---------------------------------------------------------------------------
+// Device authorization flow with PKCE-style proof of possession.
+//
+// Request/response JSON contract (the Rust CLI must match this):
+//
+//   POST /api/device/start
+//     Request body (JSON):
+//       { "code_challenge": "<base64url(SHA-256(code_verifier))>" }
+//       - The CLI generates a high-entropy random `code_verifier` (>= 32
+//         bytes of randomness, kept secret on the client), computes
+//         SHA-256 over the verifier's UTF-8 bytes, and base64url-encodes
+//         the digest (no padding) to form `code_challenge`.
+//       - `code_challenge` is RECOMMENDED. If omitted, the session is
+//         created without PKCE and poll will accept it without a verifier
+//         (backward tolerant); sending it is strongly preferred.
+//     Response body (JSON):
+//       { "device_code": "<uuid>", "user_code": "XXXXXXXX",
+//         "verification_url": "https://.../login?code=XXXXXXXX",
+//         "expires_in": 600 }
+//
+//   POST /api/device/poll
+//     Request body (JSON):
+//       { "device_code": "<uuid>", "code_verifier": "<the secret verifier>" }
+//       - `device_code` MUST be the UUID returned by /api/device/start.
+//       - `code_verifier` MUST be the original secret. If the session was
+//         created WITH a `code_challenge`, the verifier is REQUIRED and the
+//         server checks SHA-256(code_verifier) === stored code_challenge.
+//     Responses:
+//       202 { "status": "pending" }                  -> keep polling
+//       200 { "status": "approved", "token": "<jwt>", "user_id": "<uuid>" }
+//       400 { "error": ..., "code": "BAD_REQUEST" | "PKCE_VERIFICATION_FAILED" }
+//       404 { "error": ..., "code": "DEVICE_CODE_EXPIRED" }
+//     On the first successful (approved) poll the session is consumed
+//     (deleted from KV); a second poll with the same device_code returns 404.
+// ---------------------------------------------------------------------------
+
 app.post("/api/device/start", async (c) => {
+  const body = await c.req.json<{ code_challenge?: unknown }>().catch(() => null);
+
+  // code_challenge is optional but, when present, must be a non-empty string.
+  let codeChallenge: string | undefined;
+  if (body && body.code_challenge !== undefined) {
+    if (
+      typeof body.code_challenge !== "string" ||
+      body.code_challenge.trim() === "" ||
+      body.code_challenge.length > 256
+    ) {
+      return jsonError(c, 400, "Invalid code_challenge", "BAD_REQUEST");
+    }
+    codeChallenge = body.code_challenge;
+  }
+
   const deviceCode = crypto.randomUUID();
   const userCode = generateUserCode();
   const createdAt = new Date().toISOString();
@@ -614,6 +933,7 @@ app.post("/api/device/start", async (c) => {
     user_code: userCode,
     status: "pending",
     created_at: createdAt,
+    code_challenge: codeChallenge,
   };
 
   await c.env.KV.put(`device:${deviceCode}`, JSON.stringify(session), {
@@ -632,12 +952,24 @@ app.post("/api/device/start", async (c) => {
 });
 
 app.post("/api/device/poll", async (c) => {
-  const body = await c.req.json<{ device_code: string }>().catch(() => null);
-  if (!body || typeof body.device_code !== "string" || body.device_code.trim() === "") {
+  const body = await c.req
+    .json<{ device_code?: unknown; code_verifier?: unknown }>()
+    .catch(() => null);
+
+  const deviceCode = typeof body?.device_code === "string" ? body.device_code.trim() : "";
+  if (!deviceCode) {
     return jsonError(c, 400, "Invalid request body", "BAD_REQUEST");
   }
+  // device_code must be a UUID before it ever touches KV.
+  if (!UUID_RE.test(deviceCode)) {
+    return jsonError(c, 400, "Malformed device_code", "BAD_REQUEST");
+  }
 
-  const sessionRaw = await c.env.KV.get(`device:${body.device_code}`);
+  const codeVerifier =
+    typeof body?.code_verifier === "string" ? body.code_verifier : undefined;
+
+  const sessionKey = `device:${deviceCode}`;
+  const sessionRaw = await c.env.KV.get(sessionKey);
   if (!sessionRaw) {
     return jsonError(c, 404, "Device code expired", "DEVICE_CODE_EXPIRED");
   }
@@ -658,7 +990,38 @@ app.post("/api/device/poll", async (c) => {
       return jsonError(c, 500, "Approved device missing user", "INTERNAL_ERROR");
     }
 
-    const token = await issueToken(session.user_id, c.env.JWT_SECRET);
+    // PKCE proof of possession: if the session was started with a challenge,
+    // the caller MUST present the matching verifier. This binds the token
+    // issuance to the same client that initiated the device flow, so an
+    // attacker who only observes the device_code cannot redeem it.
+    if (session.code_challenge) {
+      if (!codeVerifier || codeVerifier.trim() === "") {
+        return jsonError(c, 400, "Missing code_verifier", "PKCE_VERIFICATION_FAILED");
+      }
+      const computed = await sha256Base64Url(codeVerifier);
+      if (!timingSafeEqual(computed, session.code_challenge)) {
+        return jsonError(c, 400, "code_verifier does not match", "PKCE_VERIFICATION_FAILED");
+      }
+    }
+
+    // One-time use: consume the session so the device_code cannot be replayed.
+    await c.env.KV.delete(sessionKey);
+    if (typeof session.user_code === "string") {
+      await c.env.KV.delete(`device_user:${session.user_code}`);
+    }
+
+    const userRow = await c.env.DB.prepare("SELECT token_version FROM users WHERE id = ?")
+      .bind(session.user_id)
+      .first<{ token_version: number | string }>();
+    if (!userRow) {
+      return jsonError(c, 500, "Approved device missing user", "INTERNAL_ERROR");
+    }
+
+    const token = await issueToken(
+      session.user_id,
+      Number(userRow.token_version),
+      c.env.JWT_SECRET,
+    );
     return c.json({
       status: "approved",
       token,
@@ -669,6 +1032,28 @@ app.post("/api/device/poll", async (c) => {
   return jsonError(c, 400, "Invalid device state", "BAD_REQUEST");
 });
 
+/**
+ * Revoke every outstanding token for the authenticated user by bumping their
+ * token_version. After this call, all previously issued JWTs (including the
+ * one used to make this request) fail the revocation check.
+ */
+app.post("/api/revoke", async (c) => {
+  const userId = c.get("userId");
+  await c.env.DB.prepare("UPDATE users SET token_version = token_version + 1 WHERE id = ?")
+    .bind(userId)
+    .run();
+  return c.json({ status: "revoked" });
+});
+
+// Alias: /api/logout behaves identically to /api/revoke.
+app.post("/api/logout", async (c) => {
+  const userId = c.get("userId");
+  await c.env.DB.prepare("UPDATE users SET token_version = token_version + 1 WHERE id = ?")
+    .bind(userId)
+    .run();
+  return c.json({ status: "revoked" });
+});
+
 app.post("/api/push", async (c) => {
   const userId = c.get("userId");
   const body = await c.req.json<{ entries: PushEntry[] }>().catch(() => null);
@@ -676,6 +1061,17 @@ app.post("/api/push", async (c) => {
     return jsonError(c, 400, "Invalid request body", "BAD_REQUEST");
   }
 
+  // Cap the number of entries to bound memory and DB batch size.
+  if (body.entries.length > MAX_PUSH_ENTRIES) {
+    return jsonError(
+      c,
+      413,
+      `Too many entries (max ${MAX_PUSH_ENTRIES})`,
+      "TOO_MANY_ENTRIES",
+    );
+  }
+
+  let incomingBytes = 0;
   for (const entry of body.entries) {
     if (
       !entry ||
@@ -687,21 +1083,49 @@ app.post("/api/push", async (c) => {
     ) {
       return jsonError(c, 400, "Invalid entry payload", "BAD_REQUEST");
     }
+    // Per-blob byte cap (UTF-8 length, not character length).
+    const blobBytes = encoder.encode(entry.encrypted_blob).byteLength;
+    if (blobBytes > MAX_BLOB_BYTES) {
+      return jsonError(
+        c,
+        413,
+        `Encrypted blob for entry ${entry.id} exceeds ${MAX_BLOB_BYTES} bytes`,
+        "BLOB_TOO_LARGE",
+      );
+    }
+    incomingBytes += blobBytes;
   }
-
-  const latestSeqRow = await c.env.DB.prepare(
-    "SELECT COALESCE(MAX(server_seq), 0) AS latest_seq FROM sync_entries WHERE user_id = ?",
-  )
-    .bind(userId)
-    .first<{ latest_seq: number | string }>();
-  let latestSeq = Number(latestSeqRow?.latest_seq ?? 0);
 
   if (body.entries.length === 0) {
-    return c.json({ pushed: 0, conflicts: [], latest_seq: latestSeq });
+    const latestSeqRow = await c.env.DB.prepare(
+      "SELECT COALESCE(MAX(server_seq), 0) AS latest_seq FROM sync_entries WHERE user_id = ?",
+    )
+      .bind(userId)
+      .first<{ latest_seq: number | string }>();
+    return c.json({ pushed: 0, conflicts: [], latest_seq: Number(latestSeqRow?.latest_seq ?? 0) });
   }
 
+  // Per-user storage quota. We compare against the bytes already stored for
+  // rows NOT in this push (rows being overwritten do not double-count).
   const uniqueIds = [...new Set(body.entries.map((entry) => entry.id))];
   const placeholders = uniqueIds.map(() => "?").join(", ");
+
+  const otherStorageRow = await c.env.DB.prepare(
+    `SELECT COALESCE(SUM(length(encrypted_blob)), 0) AS bytes FROM sync_entries
+     WHERE user_id = ? AND id NOT IN (${placeholders})`,
+  )
+    .bind(userId, ...uniqueIds)
+    .first<{ bytes: number | string }>();
+  const existingOtherBytes = Number(otherStorageRow?.bytes ?? 0);
+  if (existingOtherBytes + incomingBytes > MAX_USER_STORAGE_BYTES) {
+    return jsonError(
+      c,
+      413,
+      `Storage quota exceeded (max ${MAX_USER_STORAGE_BYTES} bytes per user)`,
+      "QUOTA_EXCEEDED",
+    );
+  }
+
   const existingResult = await c.env.DB.prepare(
     `SELECT id, updated_at FROM sync_entries WHERE user_id = ? AND id IN (${placeholders})`,
   )
@@ -714,30 +1138,70 @@ app.post("/api/push", async (c) => {
   }
 
   const conflicts: Array<{ id: string; server_updated_at: string }> = [];
-  const writes: D1PreparedStatement[] = [];
-
+  // De-duplicate by id within a single push; last write wins. This keeps the
+  // per-statement seq assignment below deterministic.
+  const toWrite = new Map<string, PushEntry>();
   for (const entry of body.entries) {
     const serverEntry = existingById.get(entry.id);
     if (serverEntry && isServerNewer(serverEntry.updated_at, entry.updated_at)) {
       conflicts.push({ id: entry.id, server_updated_at: serverEntry.updated_at });
       continue;
     }
-
-    latestSeq += 1;
-    writes.push(
-      c.env.DB.prepare(
-        "INSERT INTO sync_entries (id, user_id, encrypted_blob, updated_at, is_deleted, server_seq) VALUES (?, ?, ?, ?, ?, ?) " +
-          "ON CONFLICT(id, user_id) DO UPDATE SET encrypted_blob = excluded.encrypted_blob, updated_at = excluded.updated_at, is_deleted = excluded.is_deleted, server_seq = excluded.server_seq",
-      ).bind(entry.id, userId, entry.encrypted_blob, entry.updated_at, entry.is_deleted, latestSeq),
-    );
+    toWrite.set(entry.id, entry);
   }
 
-  if (writes.length > 0) {
+  const writeEntries = [...toWrite.values()];
+  let latestSeq = 0;
+
+  if (writeEntries.length > 0) {
+    // server_seq race fix: rather than reading MAX(server_seq) on the worker
+    // and incrementing in JS (two concurrent pushes could read the same MAX
+    // and assign duplicate seqs), each INSERT computes its seq from the DB
+    // at execution time as (current per-user MAX) + 1, via a correlated
+    // subquery. D1 runs batch() statements sequentially inside one implicit
+    // transaction, so statement N already sees the rows (and the bumped MAX)
+    // written by statements 1..N-1. The offset is therefore always +1.
+    //
+    // For the UPSERT/ON CONFLICT path the VALUES subquery's MAX already
+    // includes the conflicting row's own current seq, so `excluded.server_seq`
+    // (= MAX-including-self + 1) is strictly greater than any existing seq.
+    // Updated entries therefore also advance monotonically and pull picks
+    // them up correctly.
+    const writes: D1PreparedStatement[] = writeEntries.map((entry) =>
+      c.env.DB.prepare(
+        `INSERT INTO sync_entries (id, user_id, encrypted_blob, updated_at, is_deleted, server_seq)
+         VALUES (
+           ?, ?, ?, ?, ?,
+           (SELECT COALESCE(MAX(server_seq), 0) FROM sync_entries WHERE user_id = ?) + 1
+         )
+         ON CONFLICT(id, user_id) DO UPDATE SET
+           encrypted_blob = excluded.encrypted_blob,
+           updated_at = excluded.updated_at,
+           is_deleted = excluded.is_deleted,
+           server_seq = excluded.server_seq`,
+      ).bind(
+        entry.id,
+        userId,
+        entry.encrypted_blob,
+        entry.updated_at,
+        entry.is_deleted,
+        userId,
+      ),
+    );
+
     await c.env.DB.batch(writes);
   }
 
+  // Read back the authoritative latest seq after the batch committed.
+  const finalSeqRow = await c.env.DB.prepare(
+    "SELECT COALESCE(MAX(server_seq), 0) AS latest_seq FROM sync_entries WHERE user_id = ?",
+  )
+    .bind(userId)
+    .first<{ latest_seq: number | string }>();
+  latestSeq = Number(finalSeqRow?.latest_seq ?? 0);
+
   return c.json({
-    pushed: writes.length,
+    pushed: writeEntries.length,
     conflicts,
     latest_seq: latestSeq,
   });
@@ -790,6 +1254,7 @@ app.get("/api/status", async (c) => {
     total_entries: Number(row?.total_entries ?? 0),
     latest_seq: Number(row?.latest_seq ?? 0),
     storage_bytes: Number(row?.storage_bytes ?? 0),
+    storage_quota: MAX_USER_STORAGE_BYTES,
   });
 });
 
@@ -803,3 +1268,15 @@ app.notFound((c) => {
 });
 
 export default app;
+
+// Internal helpers exported for unit tests only. Not part of the public HTTP
+// surface; the worker itself uses them directly above.
+export const __test__ = {
+  signJWT,
+  verifyJWT,
+  issueToken,
+  sha256Base64Url,
+  toBase64Url,
+  timingSafeEqual,
+  TOKEN_LIFETIME_SECONDS,
+};

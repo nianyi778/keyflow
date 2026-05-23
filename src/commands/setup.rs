@@ -3,7 +3,7 @@ use comfy_table::{modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL, Cell, Color
 use console::style;
 use std::fs;
 
-use crate::commands::auth::{get_data_dir, get_passphrase, load_config, save_keyfile};
+use crate::commands::auth::{get_data_dir, get_passphrase, load_config};
 use crate::crypto::Crypto;
 use crate::db::Database;
 
@@ -35,12 +35,9 @@ pub fn cmd_serve(transport: String, host: String, port: u16) -> Result<()> {
 
 fn format_mcp_startup_error(err: &anyhow::Error) -> String {
     let msg = err.to_string();
-    if msg.contains("Vault locked")
-        || msg.contains("Run any `kf` command first to unlock")
-        || msg.contains("KEYFLOW_PASSPHRASE")
-    {
+    if msg.contains("Vault locked") || msg.contains("KEYFLOW_PASSPHRASE") {
         return format!(
-            "KeyFlow vault is locked. Run any `kf` command first to unlock, or set KEYFLOW_PASSPHRASE. ({})",
+            "KeyFlow vault is locked. Run `kf unlock` first, or set KEYFLOW_PASSPHRASE. ({})",
             err
         );
     }
@@ -66,7 +63,7 @@ fn open_db_noninteractive() -> Result<Database> {
     let passphrase = crate::commands::auth::get_passphrase_noninteractive()?;
     let crypto = Crypto::new(&passphrase, &salt)?;
     let db_path = _data_dir.join("keyflow.db");
-    Database::open(db_path.to_str().unwrap(), crypto)
+    Database::open(&db_path, crypto)
 }
 
 struct McpTool {
@@ -217,7 +214,9 @@ pub fn cmd_setup(tool: Option<String>, all: bool, list: bool) -> Result<()> {
         .unwrap_or_else(|| "kf".to_string());
 
     let passphrase = get_passphrase()?;
-    let _ = save_keyfile(&passphrase);
+    // `kf setup` is an explicit action and the MCP server it configures runs
+    // non-interactively, so cache the passphrase (with a TTL) for it to use.
+    crate::commands::auth::cache_passphrase(&passphrase, 8)?;
 
     if all {
         return setup_all(&kf_bin);
@@ -624,9 +623,8 @@ mod tests {
 
     #[test]
     fn format_mcp_error_reports_locked_vault() {
-        let err = anyhow::anyhow!(
-            "Vault locked. Run any `kf` command first to unlock, or set KEYFLOW_PASSPHRASE."
-        );
+        let err =
+            anyhow::anyhow!("Vault locked. Run `kf unlock` first, or set KEYFLOW_PASSPHRASE.");
         let msg = format_mcp_startup_error(&err);
         assert!(msg.contains("vault is locked"));
         assert!(msg.contains("KEYFLOW_PASSPHRASE"));

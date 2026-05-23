@@ -136,12 +136,14 @@ kf sync disconnect # 断开云同步
 
 ## 安全
 
-- **AES-256-GCM** 加密，**Argon2** 密钥派生
-- 本地存储：macOS `~/Library/Application Support/keyflow/`，Linux `~/.local/share/keyflow/`
-- MCP 只暴露元数据，不暴露密钥值
-- `.passphrase` 文件权限 `0600`，`kf lock` 一键清除
-- `kf run` 运行时注入，明文不落盘
-- 支持 20+ provider 自动推断（Google、GitHub、Cloudflare、AWS、OpenAI 等）
+- **AES-256-GCM** 加密，**Argon2id** 密钥派生（参数在代码中固定）
+- 本地存储：macOS `~/Library/Application Support/keyflow/`，Linux `~/.local/share/keyflow/`。DB、同步令牌文件、配置均以 `0600` 写入
+- **主口令默认不缓存**：每次命令重新提示,或通过 `KEYFLOW_PASSPHRASE` 提供。`kf unlock` 可显式开启带 TTL 的缓存(默认 8h),`kf lock` 清除
+- MCP 默认只暴露元数据。`reuse_env_snippet` 返回明文需要启动服务时设 `KEYFLOW_MCP_ALLOW_REVEAL=1`,且每次明文返回都写入 `mcp-audit.jsonl` 审计日志
+- MCP HTTP 传输强制 bearer token:设 `KEYFLOW_MCP_TOKEN` 固定,或由 `kf serve --transport http` 生成并打印;拒绝浏览器 `Origin` 头
+- `kf sync` 强制 HTTPS endpoint(本地回环除外),设备流程使用 PKCE,云端 token 有效期 7 天且可吊销
+- `kf run` 运行时注入,明文不落盘
+- 支持 20+ provider 自动推断(Google、GitHub、Cloudflare、AWS、OpenAI 等)
 
 ## License
 

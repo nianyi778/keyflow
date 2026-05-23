@@ -1,5 +1,7 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use serde_json::{json, Value};
+
+use super::errors::McpProtocolError;
 
 pub struct PromptRegistry;
 
@@ -48,7 +50,7 @@ impl PromptRegistry {
             "vault_audit" => Ok(vault_audit_prompt(arguments)),
             "project_secret_plan" => project_secret_plan_prompt(arguments),
             "provider_governance" => provider_governance_prompt(arguments),
-            _ => Err(anyhow!("Unknown prompt: {name}")),
+            _ => Err(McpProtocolError::UnknownPrompt(name.to_string()).into()),
         }
     }
 }
@@ -93,10 +95,9 @@ Use concrete counts, project names, and provider names where available. Do not a
 }
 
 fn project_secret_plan_prompt(arguments: &Value) -> Result<Value> {
-    let project = arguments
-        .get("project")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("Missing required prompt argument: project"))?;
+    let project = arguments.get("project").and_then(Value::as_str).ok_or(
+        McpProtocolError::MissingArgument("required prompt argument: project"),
+    )?;
     let required_vars = arguments
         .get("required_vars")
         .and_then(Value::as_str)
@@ -128,10 +129,9 @@ Return a gap analysis and a concrete remediation checklist."
 }
 
 fn provider_governance_prompt(arguments: &Value) -> Result<Value> {
-    let provider = arguments
-        .get("provider")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("Missing required prompt argument: provider"))?;
+    let provider = arguments.get("provider").and_then(Value::as_str).ok_or(
+        McpProtocolError::MissingArgument("required prompt argument: provider"),
+    )?;
     let text = format!(
         "Review provider '{provider}' in KeyFlow. First read vault://provider/{provider} and vault://providers. \
 Then identify redundant keys, inactive assets, expiry risks, metadata gaps, and stale credentials. \

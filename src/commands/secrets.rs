@@ -10,6 +10,7 @@ use std::path::Path;
 use crate::commands::auth::{open_db, resolve_secret};
 use crate::commands::helpers::{detect_project_name, get_default_url, parse_csv, PROVIDERS};
 use crate::models::{KeyStatus, ListFilter};
+use crate::services::errors::SecretError;
 use crate::services::secrets::{
     parse_expires, parse_optional_expires, ImportRequest, ScanImportRequest, SecretDraft,
     SecretService, SecretUpdate,
@@ -608,7 +609,15 @@ pub fn cmd_run(
     }
 
     let status = cmd.status().context("Failed to execute command")?;
-    std::process::exit(status.code().unwrap_or(1));
+    let code = status.code().unwrap_or(1);
+
+    // `kf run` must exit with the child's status code, which requires
+    // `process::exit` — and that skips destructors. Explicitly drop the things
+    // that matter (the SQLite connection and the in-memory secret values)
+    // before terminating.
+    drop(env_pairs);
+    drop(service);
+    std::process::exit(code);
 }
 
 pub fn cmd_import(
@@ -633,7 +642,12 @@ pub fn cmd_import(
         let service_preview = SecretService::new(open_db()?);
         let candidates = match service_preview.scan_path(path, false, true, false) {
             Ok(candidates) => candidates,
-            Err(err) if err.to_string().starts_with("No .env files found") => {
+            Err(err)
+                if matches!(
+                    err.downcast_ref::<SecretError>(),
+                    Some(SecretError::NoEnvFilesFound { .. })
+                ) =>
+            {
                 println!(
                     "{}",
                     style("No importable .env files found in directory.").dim()
@@ -713,11 +727,17 @@ pub fn cmd_export(
 
     match output {
         Some(path) => {
-            fs::write(&path, &content)?;
+            // The exported file holds plaintext secret values — owner-only.
+            crate::secure_fs::write_private(std::path::Path::new(&path), &content)?;
             println!(
                 "{} Exported {} secrets to {}",
                 style("✓").green().bold(),
                 entries.len(),
+                style(&path).cyan()
+            );
+            println!(
+                "  {} {} contains plaintext secrets — keep it private and delete it when done.",
+                style("⚠").yellow(),
                 path
             );
         }
