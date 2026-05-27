@@ -5,7 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.0] - 2026-05
+
+### Major Refactor
+
+- **Comprehensive modularization and architecture improvements** (one continuous effort):
+  - **Phase 1 (Module Decomposition)**: Full modularization of the services layer — extracted `import.rs`, `search.rs`, `health.rs`, and `query.rs`/`export.rs` from the former monolithic `secrets.rs`. Created dedicated modules for `add`, `get_remove`, `update`, `run`, etc. under `commands/`.
+  - **Phase 2 (Import/Scan Pipeline)**: Introduced the `ImportPlan` / `ImportAction` model as the single source of truth for import decisions. Rich preview summaries now available in `kf scan` and `kf import`.
+  - **Phase 3 (Error Handling)**: Migrated `SecretError` to `thiserror`. Multiple CLI paths now surface structured, user-friendly errors.
+  - **Phase 4 (Domain Modeling)**: Introduced three high-value newtypes (`CanonicalName`, `EnvVarName`, `Provider`) with ergonomic traits (`Deref`, `AsRef`, `From`, `Display`, `Serialize`). Systematic adoption across creation, search, and MCP paths.
+  - Heavily expanded `prompts.rs` for reusable interactive UI components.
+  - No public API breakage for end users. All changes are internal restructuring for long-term maintainability.
+
+### Other Changes
+
+- Updated version to 0.10.0.
+- Various cleanups, warning reductions, and documentation updates (TODO.md, CHANGELOG.md).
 
 ### Security
 

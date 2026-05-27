@@ -9,6 +9,7 @@ use crate::crypto::Crypto;
 use crate::db::Database;
 use crate::models::{AppConfig, ListFilter, SecretEntry};
 use crate::paths;
+use crate::services::errors::SecretError;
 use crate::services::secrets::SecretService;
 
 pub fn get_data_dir() -> Result<std::path::PathBuf> {
@@ -268,13 +269,21 @@ pub(crate) fn resolve_secret(
 
     let mut entries = service.get_entries_by_name(&name)?;
     if entries.is_empty() {
-        bail!("Secret '{}' not found", name);
+        return Err(SecretError::NotFound {
+            name,
+            project: project.map(str::to_string),
+        }
+        .into());
     }
 
     if let Some(proj) = project {
         entries.retain(|e| e.projects.iter().any(|p| p == proj));
         if entries.is_empty() {
-            bail!("Secret '{}' not found in project '{}'", name, proj);
+            return Err(SecretError::NotFound {
+                name,
+                project: Some(proj.to_string()),
+            }
+            .into());
         }
     }
 

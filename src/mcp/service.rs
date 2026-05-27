@@ -7,8 +7,8 @@ use crate::mcp::errors::McpProtocolError;
 use crate::models::{self, KeyStatus, ListFilter, SecretEntry};
 use crate::services::errors::SecretError;
 use crate::services::secrets::{
-    validate_env_var_name, ProjectKeysResult, SearchFilter, SearchResult, SecretDraft,
-    SecretService,
+    canonical_name, validate_env_var_name, ProjectKeysResult, SearchFilter,
+    SearchResult, SecretDraft, SecretService,
 };
 
 pub struct VaultService<'a> {
@@ -279,8 +279,8 @@ impl<'a> VaultService<'a> {
     }
 
     pub fn add_key(&self, request: AddKeyRequest) -> Result<Value> {
-        validate_env_var_name(&request.env_var)?;
-        let name = request.env_var.to_lowercase().replace('_', "-");
+        let _env_var = validate_env_var_name(&request.env_var)?;
+        let canonical = canonical_name(&request.env_var);
         let provider = request.provider.unwrap_or_else(|| {
             self.secrets
                 .infer_provider_for_env_var(&request.env_var)
@@ -305,7 +305,7 @@ impl<'a> VaultService<'a> {
         let result = self.secrets.create_secret(SecretDraft {
             env_var: env_var.clone(),
             value,
-            provider: provider.clone(),
+            provider: crate::services::secrets::Provider::from(provider.clone()),
             account_name: account_name.unwrap_or_default(),
             org_name: org_name.unwrap_or_default(),
             description: description.unwrap_or_default(),
@@ -322,7 +322,7 @@ impl<'a> VaultService<'a> {
             Ok(entry) => Ok(json!({
                 "success": true,
                 "code": "created",
-                "name": name,
+                "name": canonical.to_string(),
                 "env_var": entry.env_var,
                 "provider": provider,
                 "message": format!("Secret '{}' added successfully", entry.name),
@@ -339,12 +339,12 @@ impl<'a> VaultService<'a> {
                 Ok(json!({
                     "success": false,
                     "code": "already_exists",
-                    "name": name,
+                    "name": canonical.to_string(),
                     "env_var": env_var,
                     "provider": provider,
                     "message": "Secret already exists in KeyFlow.",
                     "error": "Use update flow instead.",
-                    "existing_name": name,
+                    "existing_name": canonical.to_string(),
                     "hint": "Call inspect_key first, then update the existing secret if needed."
                 }))
             }

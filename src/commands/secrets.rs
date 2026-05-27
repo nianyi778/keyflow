@@ -170,7 +170,7 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
     let entry = service.create_secret(SecretDraft {
         env_var,
         value: secret_value,
-        provider,
+        provider: crate::services::secrets::Provider::from(provider),
         account_name,
         org_name,
         description,
@@ -190,110 +190,6 @@ pub fn cmd_add(args: AddArgs) -> Result<()> {
     );
 
     crate::commands::sync::try_background_push();
-
-    Ok(())
-}
-
-pub fn cmd_list(
-    provider: Option<String>,
-    project: Option<String>,
-    expiring: bool,
-    inactive: bool,
-) -> Result<()> {
-    let service = SecretService::new(open_db()?);
-    let entries = service.list_entries(&ListFilter {
-        provider,
-        project,
-        environment: None,
-        expiring,
-        inactive,
-    })?;
-
-    if entries.is_empty() {
-        println!("{}", style("No secrets found.").dim());
-        return Ok(());
-    }
-
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec![
-            "Name", "Env Var", "Provider", "Account", "Projects", "Verified", "Expires", "Status",
-        ]);
-
-    for entry in &entries {
-        let status = entry.status();
-        let status_cell = match status {
-            KeyStatus::Active => Cell::new("Active").fg(Color::Green),
-            KeyStatus::ExpiringSoon => Cell::new("Expiring Soon").fg(Color::Yellow),
-            KeyStatus::Expired => Cell::new("EXPIRED").fg(Color::Red),
-            KeyStatus::Inactive => Cell::new("Inactive").fg(Color::DarkGrey),
-            KeyStatus::Unknown => Cell::new("Unknown").fg(Color::DarkGrey),
-        };
-
-        let expires_str = entry
-            .expires_at
-            .map(|d| d.format("%Y-%m-%d").to_string())
-            .unwrap_or_else(|| "-".to_string());
-        let verified_str = entry
-            .last_verified_at
-            .map(|d| d.format("%Y-%m-%d").to_string())
-            .unwrap_or_else(|| "-".to_string());
-
-        let projects_str = if entry.projects.is_empty() {
-            "-".to_string()
-        } else {
-            entry.projects.join(", ")
-        };
-
-        table.add_row(vec![
-            Cell::new(&entry.name),
-            Cell::new(&entry.env_var).fg(Color::Yellow),
-            Cell::new(&entry.provider),
-            Cell::new(if entry.account_name.is_empty() {
-                "-"
-            } else {
-                &entry.account_name
-            }),
-            Cell::new(&projects_str),
-            Cell::new(&verified_str),
-            Cell::new(&expires_str),
-            status_cell,
-        ]);
-    }
-
-    println!("{table}");
-    println!("\n{} {} secrets total", style("ℹ").blue(), entries.len());
-
-    let now = Utc::now();
-    let attention: Vec<String> = entries
-        .iter()
-        .filter_map(|entry| match entry.status() {
-            KeyStatus::Expired => Some(format!("{} (expired)", entry.name)),
-            KeyStatus::ExpiringSoon => {
-                let days = entry
-                    .expires_at
-                    .map(|expires| (expires - now).num_days().max(0))
-                    .unwrap_or(0);
-                Some(format!("{} (expiring in {} days)", entry.name, days))
-            }
-            _ => None,
-        })
-        .collect();
-    if !attention.is_empty() {
-        let preview_limit = 5;
-        let mut preview: Vec<String> = attention.iter().take(preview_limit).cloned().collect();
-        if attention.len() > preview_limit {
-            preview.push(format!("... and {} more", attention.len() - preview_limit));
-        }
-        println!(
-            "{} {} keys need attention: {}",
-            style("⚠").yellow().bold(),
-            style(attention.len()).yellow(),
-            style(preview.join(", ")).yellow()
-        );
-    }
 
     Ok(())
 }

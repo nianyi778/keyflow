@@ -124,7 +124,15 @@ fn dispatch_command(cli: Cli) -> Result<()> {
             source,
             on_conflict,
             yes,
-        } => commands::cmd_import(&file, provider, account, project, source, &on_conflict, yes),
+        } => commands::cmd_import(commands::ImportArgs {
+            file,
+            provider,
+            account,
+            project,
+            source,
+            on_conflict,
+            yes,
+        }),
         Commands::Export {
             project,
             environment,

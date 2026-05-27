@@ -8,6 +8,9 @@ pub struct SecretEntry {
     pub env_var: String,
     pub provider: String,
     pub account_name: String,
+    // The following fields are currently optional / lower-priority metadata.
+    // Per product direction they are candidates for further simplification
+    // or being moved into a separate extensible metadata bag in the future.
     pub org_name: String,
     pub description: String,
     pub source: String,

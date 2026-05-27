@@ -1,6 +1,7 @@
 # KeyFlow TODO
 
-> 最后更新：2026-03-16
+> 最后更新：2026-05-27
+> **进行中**：核心模块拆分与 import/scan 流水线重构（详见内部规划文档）
 > 当前产品主线：本地加密的开发者密钥资产库
 > 当前主入口：CLI + MCP
 > 当前原则：不保留历史包袱，不为未上线版本做兼容设计
@@ -45,6 +46,17 @@ KeyFlow 现在只专注四件事：
 - [x] 重写 README
   目标：删掉历史演进痕迹，只讲当前核心链路、数据模型、CLI 工作流和 MCP 能力。
   完成：MCP 工具说明更新为四层分组，旧工具名引用全部替换。
+
+- [ ] 核心模块拆分与 import/scan 流水线重构（2026-05 启动）
+  目标：将 services/secrets.rs（1582 LOC）和相关命令拆分为专注模块；统一 preview/apply 决策模型，消除重复解析与双执行问题。
+  原则：增量、零破坏、严格遵守 CLI→service→db 分层、全测试+clippy 守卫。
+  进展：**重构主要目标已基本完成**（2026-05，一口气连续推进）
+  - Phase 1 完成：secrets 目录模块化 + import 子模块 + search 子模块完整拆分（主模块显著瘦身）
+  - Phase 2 完成核心 + 落地：`ImportPlan` 模型就绪并在 CLI 中产生可见价值
+  - Phase 3 完成 + 扩展：`SecretError` 使用 thiserror；多处 CLI 错误路径已结构化
+  - Phase 4 启动：SecretEntry 字段评估注释 + `CanonicalName` newtype 种子
+  - 额外：持续 fmt/clippy/test 全绿；无破坏性变更。
+  剩余可作为独立小任务跟进：逐条 action 预览详情、health 模块拆分、newtype 更广采用。
 
 ## Next
 
